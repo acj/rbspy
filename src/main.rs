@@ -485,12 +485,29 @@ fn test_spawn_record_children_subprocesses() {
 
     let (trace_receiver, result_receiver, _, _) = spawn_recorder_children(pid, true, 5, None).unwrap();
 
-    let results: Vec<_> = result_receiver.iter().take(4).collect();
+    // Collect until there are 4 distinct PIDs in the stack traces
+    let mut pids = HashSet::new();
+    while let Ok(trace) = trace_receiver.recv() {
+        pids.insert(trace.pid.unwrap());
+        if pids.len() >= 4 {
+            break;
+        }
+    }
 
-    // check that there are 4 distinct PIDs in the stack traces
-    let pids: HashSet<Pid> = trace_receiver.iter().take(100).map(|x| x.pid.unwrap()).collect();
-    for r in results {
-        assert!(r.is_ok());
+    // Windows returns unpredictable results when we kill processes
+    #[cfg(target_os = "windows")]
+    process.kill().expect("couldn't interrupt ruby process");
+    #[cfg(not(target_os = "windows"))]
+    pids.iter().for_each(|p| {
+        unsafe { libc::kill(*p, libc::SIGTERM); }
+    });
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        let results: Vec<_> = result_receiver.iter().take(4).collect();
+        for r in results {
+            r.expect("unexpected error result");
+        }
     }
 
     assert_eq!(pids.len(), 4);
