@@ -3,8 +3,8 @@ name: ci
 on:
   pull_request:
   push:
-    branches:
-    - master
+    #branches:
+    #- master
     tags:
     - v*
   schedule:
@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         build:
         - linux
