@@ -1,14 +1,14 @@
 # originally copied from https://github.com/BurntSushi/ripgrep/blob/master/.github/workflows/ci.yml
 name: ci
 on:
-  pull_request:
-  push:
-    branches:
-    - master
-    tags:
-    - v*
-  schedule:
-  - cron: '00 01 * * *'
+  # pull_request:
+  # push:
+  #   branches:
+  #   - master
+  #   tags:
+  #   - v*
+  # schedule:
+  # - cron: '00 01 * * *'
 jobs:
   rustfmt:
     name: rustfmt
