@@ -1,7 +1,7 @@
 # originally copied from https://github.com/BurntSushi/ripgrep/blob/master/.github/workflows/ci.yml
 name: ci
 on:
-  # pull_request:
+  pull_request:
   # push:
   #   branches:
   #   - master
