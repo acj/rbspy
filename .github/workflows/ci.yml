@@ -3,32 +3,15 @@ name: ci
 on:
   pull_request:
   push:
-    branches:
-    - master
+    # branches:
+    # - master
     tags:
     - v*
   schedule:
   - cron: '00 01 * * *'
 jobs:
-  rustfmt:
-    name: rustfmt
-    runs-on: ubuntu-20.04
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
-        profile: minimal
-        components: rustfmt
-    - name: Check formatting
-      run: |
-        cargo fmt --all -- --check
-
-  build:
-    name: Build, test, and upload binaries
+  build-ruby-version-tests:
+    name: Build, test, and upload test binaries
     env:
       CARGO: cargo
       TARGET_FLAGS: --target ${{ matrix.target }}
@@ -40,18 +23,10 @@ jobs:
       matrix:
         build:
         - linux
-        - macos
-        - windows
         include:
         - build: linux
           os: ubuntu-20.04
           target: x86_64-unknown-linux-gnu
-        - build: macos
-          os: macos-latest
-          target: x86_64-apple-darwin
-        - build: windows
-          os: windows-latest
-          target: x86_64-pc-windows-msvc
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
@@ -86,110 +61,48 @@ jobs:
       run: ${{ env.CARGO }} build --release --locked --verbose --workspace ${{ env.TARGET_FLAGS }}
 
     - name: Prepare binary for upload
-      if: runner.os != 'windows'
       run: |
-        cp target/${{ matrix.target }}/release/rbspy rbspy-${{ matrix.target }}
-    - name: Prepare binary for upload
-      if: runner.os == 'windows'
-      run: |
-        copy target/${{ matrix.target }}/release/rbspy.exe rbspy-${{ matrix.target }}.exe
+        test_binary=$(cargo test --no-run --message-format=json 2>/dev/null | grep '"executable":' | tail -1 | jq '.executable')
+        cp $test_binary rbspy-test
 
     - name: Upload Linux and macOS Binaries
-      if: runner.os != 'windows'
       uses: actions/upload-artifact@v2
       with:
-        name: rbspy-${{ matrix.target }}
-        path: rbspy-${{ matrix.target }}
-    - name: Upload Windows Binaries
-      if: runner.os == 'windows'
-      uses: actions/upload-artifact@v2
-      with:
-        name: rbspy-${{ matrix.target }}.exe
-        path: rbspy-${{ matrix.target }}.exe
+        name: rbspy-test
+        path: rbspy-test
 
-    - name: Run tests
-      timeout-minutes: 5
-      run: ${{ env.CARGO }} test --release --verbose  ${{ env.TARGET_FLAGS }}
-      if: runner.os != 'macOS'
-    - name: Run tests
-      timeout-minutes: 5
-      run: sudo "PATH=$PATH" ${{ env.CARGO }} test --release --verbose  ${{ env.TARGET_FLAGS }}
-      if: runner.os == 'macOS'
-    - name: Run rbspy with alternative mallocs
-      if: runner.os == 'linux'
-      run: |
-        set -e
-        sudo apt install -y libjemalloc2 libtcmalloc-minimal4
-        target/${{ matrix.target }}/release/rbspy record env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ruby ci/ruby-programs/short_program.rb
-        target/${{ matrix.target }}/release/rbspy record env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 ruby ci/ruby-programs/short_program.rb
-
-  build-linux-cross:
+  ruby-version-tests:
     runs-on: ubuntu-latest
+    needs: [build-ruby-version-tests]
     strategy:
       matrix:
-        target: [i686-musl, armv7-musleabihf, aarch64-musl, x86_64-musl]
-    container:
-      # we're building with 'rust-musl-cross' https://github.com/messense/rust-musl-cross
-      # with some additions to add a statically compiled version of libunwind
-      image: docker://benfred/rust-musl-cross:${{ matrix.target }}
-      env:
-        RUSTUP_HOME: /root/.rustup
-        CARGO_HOME: /root/.cargo
+        - { ruby_version: 1.9.3 }
+        - { ruby_version: 2.0.0 }
+        - { ruby_version: 2.1.0 }
+        - { ruby_version: 2.2.0 }
+        - { ruby_version: 2.3.0 }
+        - { ruby_version: 2.4.0 }
+        - { ruby_version: 2.5.0 }
+        - { ruby_version: 2.7.0 }
+        - { ruby_version: 3.0.0 }
     steps:
-    - uses: actions/checkout@v2
-    - name: Cargo Cache
-      uses: actions/cache@v2.1.4
+    - name: Checkout repository
+      uses: actions/checkout@v2
+    - name: Install Ruby
+      uses: ruby/setup-ruby@v1
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-${{ matrix.target }}-cargo0-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.target }}-cargo0-
-    - name: Build
-      run: cargo build --release --locked
-    - name: Prepare binary for upload
-      run: |
-        cp target/*/release/rbspy rbspy-${{ matrix.target }}
-    - name: Upload Binaries
-      uses: actions/upload-artifact@v2
-      with:
-        name: rbspy-${{ matrix.target }}
-        path: rbspy-${{ matrix.target }}
+        ruby-version: ${{ matrix.ruby_version }}
+    - name: Run tests
+      timeout-minutes: 5
+      run: cargo test --release --verbose
 
-  release:
-    name: Publish release
-    runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
-    needs: [build-linux-cross, build]
-    steps:
-      - uses: actions/download-artifact@v2
-        with:
-          path: raw-artifacts
-      - name: Prepare binary archives
-        run: |
-          set -euo pipefail
-
-          mkdir staging
-          mv $(find raw-artifacts -type f | xargs) staging
-
-          mkdir archives
-          cd staging
-          for target in $(ls); do
-            if echo "$target" | grep -q ".exe" 2>/dev/null; then
-              echo "Found Windows binary for target $target"
-              zip -j ../archives/$target.zip $target
-            else
-              echo "Found unix binary for target $target"
-              tar czf ../archives/$target.tar.gz $target
-            fi
-          done
-
-      - uses: "marvinpinto/action-automatic-releases@v1.1.1"
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          draft: true
-          prerelease: false
-          files: |
-            archives/*
+# 1_9_3_551,
+# 2_0_0_648,
+# 2_1_0, 2_1_1, 2_1_2, 2_1_3, 2_1_4, 2_1_5, 2_1_6, 2_1_7, 2_1_8, 2_1_9, 2_1_10,
+# 2_2_0, 2_2_1, 2_2_2, 2_2_3, 2_2_4, 2_2_5, 2_2_6, 2_2_7, 2_2_8, 2_2_9, 2_2_10,
+# 2_3_0, 2_3_1, 2_3_2, 2_3_3, 2_3_4, 2_3_5, 2_3_6, 2_3_7, 2_3_8,
+# 2_4_0, 2_4_1, 2_4_2, 2_4_3, 2_4_4, 2_4_5, 2_4_6, 2_4_7, 2_4_8, 2_4_9, 2_4_10,
+# 2_5_0, 2_5_1, 2_5_2, 2_5_3, 2_5_4, 2_5_5, 2_5_6, 2_5_7, 2_5_8,
+# 2_6_0, 2_6_1, 2_6_2, 2_6_3, 2_6_4, 2_6_5, 2_6_6,
+# 2_7_0, 2_7_1, 2_7_2, 2_7_3,
+# 3_0_0, 3_0_1
