@@ -25,6 +25,7 @@ macro_rules! ruby_version_v_1_9_1(
             get_lineno_1_9_0!();
             get_stack_frame_1_9_1!();
             stack_field_1_9_0!();
+            get_thread_status_1_9_0!();
             get_thread_id_1_9_0!();
             get_cfunc_name_unsupported!();
         }
@@ -49,6 +50,7 @@ macro_rules! ruby_version_v_1_9_2_to_3(
             get_lineno_1_9_0!();
             get_stack_frame_1_9_2!();
             stack_field_1_9_0!();
+            get_thread_status_1_9_0!();
             get_thread_id_1_9_0!();
             get_cfunc_name_unsupported!();
         }
@@ -84,6 +86,7 @@ macro_rules! ruby_version_v_2_0_to_2_2(
             get_lineno_2_0_0!();
             get_stack_frame_2_0_0!();
             stack_field_1_9_0!();
+            get_thread_status_1_9_0!();
             get_thread_id_1_9_0!();
             get_cfunc_name_unsupported!();
         }
@@ -107,6 +110,7 @@ macro_rules! ruby_version_v_2_3_to_2_4(
             get_lineno_2_3_0!();
             get_stack_frame_2_3_0!();
             stack_field_1_9_0!();
+            get_thread_status_1_9_0!();
             get_thread_id_1_9_0!();
             get_cfunc_name_unsupported!();
         }
@@ -131,6 +135,7 @@ macro_rules! ruby_version_v2_5_x(
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
             get_ruby_string_array_2_5_0!();
+            get_thread_status_2_5_0!();
             get_thread_id_2_5_0!();
             #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "windows"))]
             get_cfunc_name_unsupported!();
@@ -158,6 +163,7 @@ macro_rules! ruby_version_v2_6_x(
             get_lineno_2_6_0!();
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
             get_thread_id_2_5_0!();
             #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "windows"))]
             get_cfunc_name_unsupported!();
@@ -185,6 +191,7 @@ macro_rules! ruby_version_v2_7_x(
             get_lineno_2_6_0!();
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
             get_thread_id_2_5_0!();
             get_cfunc_name!();
         }
@@ -209,6 +216,7 @@ macro_rules! ruby_version_v3_0_x(
             get_lineno_2_6_0!();
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
             get_thread_id_2_5_0!();
             get_cfunc_name!();
 
@@ -236,6 +244,7 @@ macro_rules! ruby_version_v3_1_x(
             get_lineno_2_6_0!();
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
             get_thread_id_2_5_0!();
             get_cfunc_name!();
 
@@ -262,6 +271,7 @@ macro_rules! ruby_version_v3_2_x(
             get_lineno_2_6_0!();
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
             get_thread_id_3_2_0!();
             get_cfunc_name!();
 
@@ -288,6 +298,7 @@ macro_rules! ruby_version_v3_3_x(
             get_lineno_2_6_0!();
             get_stack_frame_2_5_0!();
             stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
             get_thread_id_3_2_0!();
             get_cfunc_name!();
 
@@ -372,25 +383,35 @@ macro_rules! get_stack_trace(
             ruby_global_symbols_address_location: Option<usize>,
             source: &T,
             pid: Pid,
-        ) -> Result<StackTrace, anyhow::Error> {
+            on_cpu: bool,
+        ) -> Result<Option<StackTrace>, anyhow::Error> {
             let current_thread_addr: usize = get_execution_context(ruby_current_thread_address_location, ruby_vm_address_location, source)
                 .context("couldn't get execution context")?;
             let thread: $thread_type = source.copy_struct(current_thread_addr)
                 .context("couldn't get current thread")?;
 
+            if on_cpu && get_thread_status(&thread, source)? != 0 /* THREAD_RUNNABLE */ {
+                // This is in addition to any OS-specific checks for thread activity, and provides
+                // an extra measure of reliability for targets that don't have them. It also works
+                // for coredump targets.
+                return Ok(None);
+            }
+
+            let thread_id = match get_thread_id(&thread, source) {
+                Ok(tid) => Some(tid),
+                Err(e) => {
+                    debug!("Couldn't get thread ID: {}", e);
+                    None
+                },
+            };
             if stack_field(&thread) as usize == 0 {
-                return Ok(StackTrace {
+                return Ok(Some(StackTrace {
                     pid: Some(pid),
                     trace: vec!(StackFrame::unknown_c_function()),
-                    thread_id: match get_thread_id(&thread, source) {
-                        Ok(tid) => Some(tid),
-                        Err(e) => {
-                            debug!("Couldn't get thread ID: {}", e);
-                            None
-                        },
-                    },
-                    time: Some(SystemTime::now())
-                });
+                    thread_id: thread_id,
+                    time: Some(SystemTime::now()),
+                    on_cpu: None,
+                }));
             }
             let mut trace = Vec::new();
             let cfps = get_cfps(thread.cfp as usize, stack_base(&thread) as usize, source)?;
@@ -446,7 +467,7 @@ macro_rules! get_stack_trace(
                     None
                 },
             };
-            Ok(StackTrace{trace, pid: Some(pid), thread_id, time: Some(SystemTime::now())})
+            Ok(Some(StackTrace{trace, pid: Some(pid), thread_id, time: Some(SystemTime::now()), on_cpu: Some(on_cpu)}))
         }
 
         use proc_maps::{maps_contain_addr, MapRange};
@@ -488,7 +509,7 @@ macro_rules! get_stack_trace(
             }
 
             // finally, try to get an actual stack trace from the source and see if it works
-            get_stack_trace(candidate_thread_addr_ptr, 0, None, source, 0).is_ok()
+            get_stack_trace(candidate_thread_addr_ptr, 0, None, source, 0, false).is_ok()
         }
     )
 );
@@ -507,7 +528,6 @@ macro_rules! stack_field_1_9_0(
 
 macro_rules! stack_field_2_5_0(
     () => (
-
         fn stack_field(thread: &rb_execution_context_struct) -> i64 {
             thread.vm_stack as i64
         }
@@ -518,9 +538,39 @@ macro_rules! stack_field_2_5_0(
     )
 );
 
+macro_rules! get_thread_status_1_9_0(
+    () => (
+        fn get_thread_status<T>(thread_struct: &rb_thread_struct, _source: &T) -> Result<u32> {
+            Ok(thread_struct.status as u32)
+        }
+    )
+);
+
+macro_rules! get_thread_status_2_5_0(
+    () => (
+        fn get_thread_status<T>(thread_struct: &rb_execution_context_struct, source: &T)
+                            -> Result<u32> where T: ProcessMemory {
+            let thread: rb_thread_struct = source.copy_struct(thread_struct.thread_ptr as usize)
+                .context(thread_struct.thread_ptr as usize)?;
+            Ok(thread.status as u32)
+        }
+    )
+);
+
+// ->status changed into a bitfield
+macro_rules! get_thread_status_2_6_0(
+    () => (
+        fn get_thread_status<T>(thread_struct: &rb_execution_context_struct, source: &T)
+                            -> Result<u32> where T: ProcessMemory {
+            let thread: rb_thread_struct = source.copy_struct(thread_struct.thread_ptr as usize)
+                .context(thread_struct.thread_ptr as usize)?;
+            Ok(thread.status() as u32)
+        }
+    )
+);
+
 macro_rules! get_thread_id_1_9_0(
     () => (
-
         fn get_thread_id<T>(thread_struct: &rb_thread_struct, _source: &T) -> Result<usize> {
             Ok(thread_struct.thread_id as usize)
         }
@@ -529,7 +579,6 @@ macro_rules! get_thread_id_1_9_0(
 
 macro_rules! get_thread_id_2_5_0(
     () => (
-
         fn get_thread_id<T>(thread_struct: &rb_execution_context_struct, source: &T)
                             -> Result<usize> where T: ProcessMemory {
             let thread: rb_thread_struct = source.copy_struct(thread_struct.thread_ptr as usize)
@@ -1652,7 +1701,9 @@ mod tests {
             None,
             &coredump_1_9_3(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_1_9_3(), stack_trace.trace);
     }
@@ -1667,7 +1718,9 @@ mod tests {
             None,
             &coredump_2_1_6(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_main(), stack_trace.trace);
     }
@@ -1683,7 +1736,9 @@ mod tests {
             None,
             &coredump_2_1_6_c_function(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(vec!(StackFrame::unknown_c_function()), stack_trace.trace);
     }
@@ -1698,7 +1753,9 @@ mod tests {
             None,
             &coredump_2_4_0(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace(), stack_trace.trace);
     }
@@ -1713,7 +1770,9 @@ mod tests {
             None,
             &coredump_2_5_0(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace(), stack_trace.trace);
     }
@@ -1729,7 +1788,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1745,7 +1806,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1761,7 +1824,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1777,7 +1842,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1793,7 +1860,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1809,7 +1878,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1825,7 +1896,9 @@ mod tests {
             global_symbols_addr,
             &coredump_2_7_2(),
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1842,7 +1915,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1859,7 +1934,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1876,7 +1953,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1893,7 +1972,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1910,7 +1991,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1927,7 +2010,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1944,7 +2029,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1961,7 +2048,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_2_7_2(), stack_trace.trace);
     }
@@ -1978,7 +2067,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -1995,7 +2086,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -2012,7 +2105,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -2029,7 +2124,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -2046,7 +2143,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -2063,7 +2162,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -2080,7 +2181,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_1_0(), stack_trace.trace);
     }
@@ -2097,7 +2200,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.trace);
     }
@@ -2114,7 +2219,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.trace);
     }
@@ -2131,7 +2238,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.trace);
     }
@@ -2148,7 +2257,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.trace);
     }
@@ -2165,7 +2276,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.trace);
     }
@@ -2182,7 +2295,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.trace);
     }
@@ -2199,7 +2314,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.trace);
     }
@@ -2216,7 +2333,9 @@ mod tests {
             global_symbols_addr,
             &source,
             0,
+            false,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.trace);
     }
