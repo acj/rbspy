@@ -140,7 +140,7 @@ mod os_impl {
     fn get_ruby_binary(maps: &Vec<DyldInfo>) -> Result<Binary> {
         let map: &DyldInfo = maps
             .iter()
-            .find(|ref m| m.filename.contains("bin/ruby"))
+            .find(|ref m| m.filename.ends_with("/ruby"))
             .ok_or(format_err!("Couldn't find ruby map"))?;
         Binary::from(map.address, &map.filename)
     }
