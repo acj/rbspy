@@ -24,6 +24,11 @@ if [ -e "$ruby_src_dir/internal" ]
 then
     cp -R "$ruby_src_dir/internal" /tmp/headers/$1
 fi
+if [ -e "$ruby_src_dir/.ext" ]
+then
+    cp -R "$ruby_src_dir/.ext" /tmp/headers/$1
+fi
+
 if [ -e "$ruby_src_dir/ccan" ]
 then
     cp -R "$ruby_src_dir/ccan" /tmp/headers/$1
@@ -63,6 +68,7 @@ bindgen /tmp/wrapper.h \
     -- \
     -I/tmp/headers/$1/include \
     -I/tmp/headers/$1/ \
+    -I/tmp/headers/$1/.ext/include/x86_64-linux \
     "-I$ruby_header_dir"
 
 OUT=ruby-structs/src/ruby_${1}.rs
