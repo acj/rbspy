@@ -797,6 +797,8 @@ macro_rules! get_cfunc_name_unsupported(
 
 macro_rules! get_cfunc_name(
     () => (
+        use std::convert::TryInto;
+
         fn check_method_entry<T: ProcessMemory>(
             raw_imemo: usize,
             source: &T
@@ -809,7 +811,7 @@ macro_rules! get_cfunc_name(
                 imemo_type_imemo_ment => Ok(&imemo as *const rb_method_entry_struct),
                 imemo_type_imemo_svar => {
                     let svar: vm_svar = source.copy_struct(raw_imemo).context(raw_imemo)?;
-                    check_method_entry(svar.cref_or_me, source)
+                    check_method_entry(svar.cref_or_me.try_into().unwrap(), source)
                 },
                 _ => Ok(raw_imemo as *const rb_method_entry_struct)
             }
