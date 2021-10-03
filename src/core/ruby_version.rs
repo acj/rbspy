@@ -1002,6 +1002,7 @@ ruby_version_v2_7_x!(ruby_2_7_4);
 ruby_version_v3_0_x!(ruby_3_0_0);
 ruby_version_v3_0_x!(ruby_3_0_1);
 ruby_version_v3_0_x!(ruby_3_0_2);
+ruby_version_v3_0_x!(ruby_3_1_0_pre);
 
 #[cfg(test)]
 mod tests {
