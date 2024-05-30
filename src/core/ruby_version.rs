@@ -1290,6 +1290,7 @@ ruby_version_v3_1_x!(ruby_3_1_2);
 ruby_version_v3_1_x!(ruby_3_1_3);
 ruby_version_v3_1_x!(ruby_3_1_4);
 ruby_version_v3_1_x!(ruby_3_1_5);
+ruby_version_v3_1_x!(ruby_3_1_6);
 ruby_version_v3_2_x!(ruby_3_2_0);
 ruby_version_v3_2_x!(ruby_3_2_1);
 ruby_version_v3_2_x!(ruby_3_2_2);
