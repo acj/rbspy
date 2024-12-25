@@ -302,6 +302,10 @@ mod tests {
         let mut cmd = RubyScript::new("./ci/ruby-programs/infinite_on_cpu.rb");
         let mut getter = RubySpy::retry_new(cmd.id(), 100, None, false).unwrap();
 
+        let _initial_stack_trace = getter
+            .get_stack_trace(false)
+            .expect("couldn't get stack trace");
+
         cmd.kill().expect("couldn't clean up test process");
 
         let mut i = 0;
