@@ -8,166 +8,166 @@ on:
     tags:
       - v*
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '35 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  format:
-    name: Check code formatting
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4305c38b25d97ef35a8ad1f985ccf2d2242004f2 # stable branch
-      - name: Run cargo fmt
-        run: |
-          cargo fmt --all -- --check
+  # format:
+  #   name: Check code formatting
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #     - name: Install Rust
+  #       uses: dtolnay/rust-toolchain@4305c38b25d97ef35a8ad1f985ccf2d2242004f2 # stable branch
+  #     - name: Run cargo fmt
+  #       run: |
+  #         cargo fmt --all -- --check
 
-  build:
-    name: Build
-    env:
-      CARGO: cargo
-      TARGET_FLAGS: --target ${{ matrix.target }}
-      RUST_BACKTRACE: full
-    timeout-minutes: 30
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        build:
-          - linux-x86_64
-          - linux-aarch64
-          - macos
-          - windows
-        include:
-          - build: linux-x86_64
-            os: ubuntu-24.04
-            ruby-version: 3.4.3
-            run-tests: 'true'
-            target: x86_64-unknown-linux-gnu
-          - build: linux-aarch64
-            os: ubuntu-24.04-arm
-            ruby-version: 3.4.3
-            run-tests: 'true'
-            target: aarch64-unknown-linux-gnu
-          - build: macos
-            os: macos-14
-            ruby-version: 3.4.3
-            run-tests: 'true'
-            target: x86_64-apple-darwin
-          - build: windows
-            os: windows-2022
-            ruby-version: 3.4.3
-            run-tests: 'true'
-            target: x86_64-pc-windows-msvc
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Install Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: ${{ matrix.ruby-version }}
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4305c38b25d97ef35a8ad1f985ccf2d2242004f2 # stable branch
-      - name: Install Rust toolchain target
-        run: |
-          rustup target add ${{ matrix.target }}
-      - name: Cargo Cache
-        uses: Swatinem/rust-cache@v2.7.8
-        with:
-          cache-on-failure: "true"
-          key: "${{ matrix.os }}-${{ matrix.target }}"
-          prefix-key: "20230109"
-      - name: Show command used for Cargo
-        run: |
-          echo "cargo command is: ${{ env.CARGO }}"
-          echo "target flag is: ${{ env.TARGET_FLAGS }}"
+  # build:
+  #   name: Build
+  #   env:
+  #     CARGO: cargo
+  #     TARGET_FLAGS: --target ${{ matrix.target }}
+  #     RUST_BACKTRACE: full
+  #   timeout-minutes: 30
+  #   runs-on: ${{ matrix.os }}
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       build:
+  #         - linux-x86_64
+  #         - linux-aarch64
+  #         - macos
+  #         - windows
+  #       include:
+  #         - build: linux-x86_64
+  #           os: ubuntu-24.04
+  #           ruby-version: 3.4.3
+  #           run-tests: 'true'
+  #           target: x86_64-unknown-linux-gnu
+  #         - build: linux-aarch64
+  #           os: ubuntu-24.04-arm
+  #           ruby-version: 3.4.3
+  #           run-tests: 'true'
+  #           target: aarch64-unknown-linux-gnu
+  #         - build: macos
+  #           os: macos-14
+  #           ruby-version: 3.4.3
+  #           run-tests: 'true'
+  #           target: x86_64-apple-darwin
+  #         - build: windows
+  #           os: windows-2022
+  #           ruby-version: 3.4.3
+  #           run-tests: 'true'
+  #           target: x86_64-pc-windows-msvc
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #     - name: Install Ruby
+  #       uses: ruby/setup-ruby@v1
+  #       with:
+  #         ruby-version: ${{ matrix.ruby-version }}
+  #     - name: Install Rust
+  #       uses: dtolnay/rust-toolchain@4305c38b25d97ef35a8ad1f985ccf2d2242004f2 # stable branch
+  #     - name: Install Rust toolchain target
+  #       run: |
+  #         rustup target add ${{ matrix.target }}
+  #     - name: Cargo Cache
+  #       uses: Swatinem/rust-cache@v2.7.8
+  #       with:
+  #         cache-on-failure: "true"
+  #         key: "${{ matrix.os }}-${{ matrix.target }}"
+  #         prefix-key: "20230109"
+  #     - name: Show command used for Cargo
+  #       run: |
+  #         echo "cargo command is: ${{ env.CARGO }}"
+  #         echo "target flag is: ${{ env.TARGET_FLAGS }}"
 
-      - name: Build rbspy
-        run: ${{ env.CARGO }} build --release --locked --workspace --all-targets ${{ env.TARGET_FLAGS }}
+  #     - name: Build rbspy
+  #       run: ${{ env.CARGO }} build --release --locked --workspace --all-targets ${{ env.TARGET_FLAGS }}
 
-      - name: Prepare binary for upload
-        if: runner.os != 'windows'
-        run: |
-          cp target/${{ matrix.target }}/release/rbspy rbspy-${{ matrix.target }}
-      - name: Prepare binary for upload
-        if: runner.os == 'windows'
-        run: |
-          copy target/${{ matrix.target }}/release/rbspy.exe rbspy-${{ matrix.target }}.exe
+  #     - name: Prepare binary for upload
+  #       if: runner.os != 'windows'
+  #       run: |
+  #         cp target/${{ matrix.target }}/release/rbspy rbspy-${{ matrix.target }}
+  #     - name: Prepare binary for upload
+  #       if: runner.os == 'windows'
+  #       run: |
+  #         copy target/${{ matrix.target }}/release/rbspy.exe rbspy-${{ matrix.target }}.exe
 
-      - name: Upload Linux and macOS Binaries
-        if: runner.os != 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: rbspy-${{ matrix.target }}
-          path: rbspy-${{ matrix.target }}
-      - name: Upload Windows Binaries
-        if: runner.os == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: rbspy-${{ matrix.target }}.exe
-          path: rbspy-${{ matrix.target }}.exe
+  #     - name: Upload Linux and macOS Binaries
+  #       if: runner.os != 'windows'
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rbspy-${{ matrix.target }}
+  #         path: rbspy-${{ matrix.target }}
+  #     - name: Upload Windows Binaries
+  #       if: runner.os == 'windows'
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rbspy-${{ matrix.target }}.exe
+  #         path: rbspy-${{ matrix.target }}.exe
 
-      - name: Run tests
-        timeout-minutes: 5
-        run: ${{ env.CARGO }} test --release ${{ env.TARGET_FLAGS }}
-        if: runner.os == 'linux' && matrix.run-tests == 'true'
-      - name: Run tests
-        timeout-minutes: 5
-        run: sudo "PATH=$PATH" ${{ env.CARGO }} test --release ${{ env.TARGET_FLAGS }}
-        if: runner.os == 'macOS' && matrix.run-tests == 'true'
-      - name: Run tests
-        timeout-minutes: 5
-        run: ${{ env.CARGO }} test --release ${{ env.TARGET_FLAGS }} -- --skip core::ruby_version::tests::test_get_ruby_stack_trace
-        if: runner.os == 'windows' && matrix.run-tests == 'true'
-      - name: Run rbspy with alternative mallocs
-        if: runner.os == 'linux' && matrix.run-tests == 'true'
-        run: |
-          set -e
-          sudo apt install -y libjemalloc2 libtcmalloc-minimal4
-          os_triple="$(echo ${{ matrix.target }} | sed 's/unknown-linux-gnu/linux-gnu/')"
-          target/${{ matrix.target }}/release/rbspy record env LD_PRELOAD=/usr/lib/$os_triple/libjemalloc.so.2 ruby ci/ruby-programs/short_program.rb
-          target/${{ matrix.target }}/release/rbspy record env LD_PRELOAD=/usr/lib/$os_triple/libtcmalloc_minimal.so.4 ruby ci/ruby-programs/short_program.rb
+  #     - name: Run tests
+  #       timeout-minutes: 5
+  #       run: ${{ env.CARGO }} test --release ${{ env.TARGET_FLAGS }}
+  #       if: runner.os == 'linux' && matrix.run-tests == 'true'
+  #     - name: Run tests
+  #       timeout-minutes: 5
+  #       run: sudo "PATH=$PATH" ${{ env.CARGO }} test --release ${{ env.TARGET_FLAGS }}
+  #       if: runner.os == 'macOS' && matrix.run-tests == 'true'
+  #     - name: Run tests
+  #       timeout-minutes: 5
+  #       run: ${{ env.CARGO }} test --release ${{ env.TARGET_FLAGS }} -- --skip core::ruby_version::tests::test_get_ruby_stack_trace
+  #       if: runner.os == 'windows' && matrix.run-tests == 'true'
+  #     - name: Run rbspy with alternative mallocs
+  #       if: runner.os == 'linux' && matrix.run-tests == 'true'
+  #       run: |
+  #         set -e
+  #         sudo apt install -y libjemalloc2 libtcmalloc-minimal4
+  #         os_triple="$(echo ${{ matrix.target }} | sed 's/unknown-linux-gnu/linux-gnu/')"
+  #         target/${{ matrix.target }}/release/rbspy record env LD_PRELOAD=/usr/lib/$os_triple/libjemalloc.so.2 ruby ci/ruby-programs/short_program.rb
+  #         target/${{ matrix.target }}/release/rbspy record env LD_PRELOAD=/usr/lib/$os_triple/libtcmalloc_minimal.so.4 ruby ci/ruby-programs/short_program.rb
 
-  build-linux-cross:
-    name: Build
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - aarch64-musl
-          - x86_64-musl
-        include:
-          - target: aarch64-musl
-            triple: aarch64-unknown-linux-musl
-          - target: x86_64-musl
-            triple: x86_64-unknown-linux-musl
-    container:
-      image: docker://messense/rust-musl-cross:${{ matrix.target }}
-      env:
-        RUSTUP_HOME: /root/.rustup
-        CARGO_HOME: /root/.cargo
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cargo Cache
-        uses: Swatinem/rust-cache@v2.7.8
-        with:
-          prefix-key: "20230109"
-      - name: Build
-        run: cargo build --release --locked
-      - name: Prepare binary for upload
-        run: |
-          cp target/*/release/rbspy rbspy-${{ matrix.triple }}
-      - name: Upload Binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: rbspy-${{ matrix.triple }}
-          path: rbspy-${{ matrix.triple }}
+  # build-linux-cross:
+  #   name: Build
+  #   runs-on: ubuntu-24.04
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       target:
+  #         - aarch64-musl
+  #         - x86_64-musl
+  #       include:
+  #         - target: aarch64-musl
+  #           triple: aarch64-unknown-linux-musl
+  #         - target: x86_64-musl
+  #           triple: x86_64-unknown-linux-musl
+  #   container:
+  #     image: docker://messense/rust-musl-cross:${{ matrix.target }}
+  #     env:
+  #       RUSTUP_HOME: /root/.rustup
+  #       CARGO_HOME: /root/.cargo
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Cargo Cache
+  #       uses: Swatinem/rust-cache@v2.7.8
+  #       with:
+  #         prefix-key: "20230109"
+  #     - name: Build
+  #       run: cargo build --release --locked
+  #     - name: Prepare binary for upload
+  #       run: |
+  #         cp target/*/release/rbspy rbspy-${{ matrix.triple }}
+  #     - name: Upload Binaries
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: rbspy-${{ matrix.triple }}
+  #         path: rbspy-${{ matrix.triple }}
 
   build-freebsd:
     name: Build (FreeBSD)
@@ -192,7 +192,7 @@ jobs:
           cross test --release --no-run --target x86_64-unknown-freebsd
 
       - name: Launch Firecracker VM
-        uses: acj/freebsd-firecracker-action@v0.3.0
+        uses: acj/freebsd-firecracker-action@51b9183463c3fdc67abb9e8430d76dd7d6173f9f
         with:
           verbose: false
           pre-run: |
@@ -262,48 +262,48 @@ jobs:
           name: rbspy-x86_64-unknown-freebsd
           path: rbspy-x86_64-unknown-freebsd
 
-  release:
-    name: Create draft release
-    runs-on: ubuntu-24.04
-    if: "startsWith(github.ref, 'refs/tags/')"
-    needs: [build, build-freebsd, build-linux-cross]
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: raw-artifacts
-      - name: Prepare binary archives
-        run: |
-          set -euo pipefail
+  # release:
+  #   name: Create draft release
+  #   runs-on: ubuntu-24.04
+  #   if: "startsWith(github.ref, 'refs/tags/')"
+  #   needs: [build, build-freebsd, build-linux-cross]
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         path: raw-artifacts
+  #     - name: Prepare binary archives
+  #       run: |
+  #         set -euo pipefail
 
-          mkdir staging
-          mv $(find raw-artifacts -type f | xargs) staging
+  #         mkdir staging
+  #         mv $(find raw-artifacts -type f | xargs) staging
 
-          mkdir archives
-          cd staging
-          for target in $(ls); do
-            if echo "$target" | grep -q ".exe" 2>/dev/null; then
-              echo "Found Windows binary for target $target"
-              zip -j ../archives/$target.zip $target
-            else
-              echo "Found unix binary for target $target"
-              chmod a+x $target
-              tar czf ../archives/$target.tar.gz $target
-            fi
-          done
+  #         mkdir archives
+  #         cd staging
+  #         for target in $(ls); do
+  #           if echo "$target" | grep -q ".exe" 2>/dev/null; then
+  #             echo "Found Windows binary for target $target"
+  #             zip -j ../archives/$target.zip $target
+  #           else
+  #             echo "Found unix binary for target $target"
+  #             chmod a+x $target
+  #             tar czf ../archives/$target.tar.gz $target
+  #           fi
+  #         done
 
-      - name: Calculate checksums
-        run: |
-          set -euo pipefail
+  #     - name: Calculate checksums
+  #       run: |
+  #         set -euo pipefail
 
-          cd archives
-          for file in *; do
-            sha256sum "$file" | awk '{print $1}' > "$file.sha256"
-          done
+  #         cd archives
+  #         for file in *; do
+  #           sha256sum "$file" | awk '{print $1}' > "$file.sha256"
+  #         done
 
-      - uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # v1.1.1
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          draft: true
-          prerelease: false
-          files: |
-            archives/*
+  #     - uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # v1.1.1
+  #       with:
+  #         repo_token: "${{ secrets.GITHUB_TOKEN }}"
+  #         draft: true
+  #         prerelease: false
+  #         files: |
+  #           archives/*
