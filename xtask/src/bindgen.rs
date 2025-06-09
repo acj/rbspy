@@ -170,21 +170,22 @@ fn prepare_ruby_headers(
     ruby_source_path: &Path,
     version_tag: &str,
 ) -> Result<PathBuf> {
-    let clean_version = version_tag
-        .trim_start_matches("v")
-        .replace("_551", "") // ruby 1.9
-        .replace("_648", "") // ruby 2.0
-        .replace("_", ".");
-    let version = semver::Version::parse(&clean_version)?;
+    // let clean_version = version_tag
+    //     .trim_start_matches("v")
+    //     .replace("_551", "") // ruby 1.9
+    //     .replace("_648", "") // ruby 2.0
+    //     .replace("_", ".");
+    // let version = semver::Version::parse(&clean_version)?;
+    let version = "master";
 
     copy_dir_recursive(ruby_source_path.join("include"), path.join("include"))?;
     let _ = copy_dir_recursive(ruby_source_path.join("internal"), path.join("internal"));
     let _ = copy_dir_recursive(ruby_source_path.join("ccan"), path.join("ccan"));
 
-    if version >= semver::Version::new(3, 3, 0) {
+    // if version >= semver::Version::new(3, 3, 0) {
         copy_dir_recursive(ruby_source_path.join("prism"), path.join("prism"))?;
         std::fs::File::create(&path.join("prism_compile.h"))?;
-    }
+    // }
 
     let config_path = find_file(ruby_source_path.join(".ext"), &PathBuf::from("config.h"))?;
     log::info!("Found config.h at {}", config_path.to_string_lossy());
@@ -207,20 +208,20 @@ fn prepare_ruby_headers(
     let mut wrapper = std::fs::File::create(&wrapper_path)?;
     writeln!(wrapper, "#define RUBY_JMP_BUF sigjmp_buf")?;
     writeln!(wrapper, "#include \"{}/vm_core.h\"", path.to_string_lossy())?;
-    if version >= semver::Version::new(3, 0, 0) {
+    // if version >= semver::Version::new(3, 0, 0) {
         writeln!(
             wrapper,
             "#include \"{}/ractor_core.h\"",
             path.to_string_lossy()
         )?;
-    }
-    if version >= semver::Version::new(3, 3, 0) {
+    // }
+    // if version >= semver::Version::new(3, 3, 0) {
         writeln!(
             wrapper,
             "#include \"{}/prism/options.h\"",
             path.to_string_lossy()
         )?;
-    }
+    // }
     writeln!(wrapper, "#include \"{}/iseq.h\"", path.to_string_lossy())?;
 
     return Ok(wrapper_path);

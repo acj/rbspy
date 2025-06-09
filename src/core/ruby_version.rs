@@ -1409,6 +1409,7 @@ ruby_version_v3_3_x!(ruby_3_4_1);
 ruby_version_v3_3_x!(ruby_3_4_2);
 ruby_version_v3_3_x!(ruby_3_4_3);
 ruby_version_v3_3_x!(ruby_3_4_4);
+ruby_version_v3_5_x!(ruby_3_5_0);
 
 #[cfg(not(debug_assertions))]
 #[cfg(test)]
