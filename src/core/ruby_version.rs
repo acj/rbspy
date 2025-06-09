@@ -308,6 +308,33 @@ macro_rules! ruby_version_v3_3_x(
     )
 );
 
+macro_rules! ruby_version_v3_5_x(
+    ($ruby_version:ident) => (
+        pub mod $ruby_version {
+            use std;
+            use anyhow::{Context, format_err, Result};
+            use bindings::$ruby_version::*;
+            use crate::core::process::ProcessMemory;
+
+            get_stack_trace!(rb_execution_context_struct);
+            get_execution_context_directly_from_vm!();
+            get_ruby_string_3_3_0!();
+            get_ruby_string_array_3_2_0!();
+            get_cfps!();
+            get_pos!(rb_iseq_constant_body);
+            get_lineno_2_6_0!();
+            get_stack_frame_2_5_0!();
+            stack_field_2_5_0!();
+            get_thread_status_2_6_0!();
+            get_thread_id_3_2_0!();
+            get_cfunc_name!();
+
+            #[allow(non_upper_case_globals)]
+            const ruby_fl_type_RUBY_FL_USHIFT: ruby_fl_type = ruby_fl_ushift_RUBY_FL_USHIFT as i32;
+        }
+    )
+);
+
 macro_rules! get_execution_context_from_thread(
     ($thread_type:ident) => (
         pub fn get_execution_context<T: ProcessMemory>(
@@ -368,6 +395,24 @@ macro_rules! get_execution_context_from_vm(
             .first()
             .map(|&addr| addr as usize)
             .ok_or_else(|| format_err!("couldn't find execution context"))
+        }
+    )
+);
+
+macro_rules! get_execution_context_directly_from_vm(
+    () => (
+        pub fn get_execution_context<T: ProcessMemory>(
+            _current_thread_address_ptr: usize,
+            ruby_vm_address_ptr: usize,
+            source: &T
+        ) -> Result<usize> {
+            let vm_addr: usize = source.copy_struct(ruby_vm_address_ptr)
+                .context("couldn't read Ruby VM pointer")?;
+            let vm: rb_vm_struct = source.copy_struct(vm_addr as usize)
+                .context("couldn't read Ruby VM struct")?;
+
+            let main_thread: rb_thread_t = source.copy_struct(vm.ractor.main_thread as usize).context("couldn't read main thread struct")?;
+            return Ok(main_thread.ec as usize);
         }
     )
 );
