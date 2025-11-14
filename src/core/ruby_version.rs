@@ -357,7 +357,7 @@ macro_rules! get_execution_context_from_vm(
                 if cfg!(target_os = "windows") {
                     32
                 } else {
-                    48
+                    38
                 };
             const ADDRESSES_TO_CHECK: usize = 32;
             let offset = INITIAL_OFFSET * std::mem::size_of::<usize>();
