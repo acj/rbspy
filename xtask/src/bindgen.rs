@@ -167,11 +167,17 @@ fn prepare_ruby_headers(
     ruby_source_path: &Path,
     version_tag: &str,
 ) -> Result<PathBuf> {
-    let clean_version = version_tag
+    let mut clean_version = version_tag
         .trim_start_matches("v")
         .replace("_551", "") // ruby 1.9
         .replace("_648", "") // ruby 2.0
         .replace("_", ".");
+    if let Some(idx) = clean_version.rfind(".preview") {
+        let after = &clean_version[idx + ".preview".len()..];
+        if !after.is_empty() && after.chars().all(|c| c.is_ascii_digit()) {
+            clean_version = (&clean_version[..idx]).to_string();
+        }
+    }
     let version = semver::Version::parse(&clean_version)?;
 
     copy_dir_recursive(ruby_source_path.join("include"), path.join("include"))?;
