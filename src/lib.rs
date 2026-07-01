@@ -49,10 +49,10 @@ pub fn report(
     input: &mut dyn std::io::Read,
     output: &mut dyn std::io::Write,
 ) -> Result<()> {
-    let traces = storage::from_reader(input)?.traces;
+    let traces = storage::TraceStream::new(input)?;
     let mut outputter = format.outputter(0.1);
     for trace in traces {
-        outputter.record(&trace)?;
+        outputter.record(&trace?)?;
     }
     outputter.complete(output)?;
     Ok(())
