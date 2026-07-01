@@ -3,7 +3,7 @@ use std::cmp::min;
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 
-use crate::core::types::StackFrame;
+use crate::core::types::{sanitize_frame_text, StackFrame};
 
 /*
  * **Notes about the overall design**
@@ -263,16 +263,18 @@ impl Stats {
         let sorted: BTreeMap<_, _> = self.locations.0.iter().collect();
         for (frame, loc) in sorted.iter() {
             writeln!(w)?;
-            // Exclusive info, along with filename and function name.
-            writeln!(w, "fl={}", frame.path())?;
-            writeln!(w, "fn={}", &frame.name)?;
+            // Exclusive info, along with filename and function name. The names and
+            // paths come from the profiled process, so strip any control characters
+            // that would corrupt this line-oriented format.
+            writeln!(w, "fl={}", sanitize_frame_text(frame.path()))?;
+            writeln!(w, "fn={}", sanitize_frame_text(&frame.name))?;
             writeln!(w, "{} {}", frame.lineno.unwrap_or(0), loc.exclusive)?;
 
             // Inclusive info for each function called by this one.
             let csorted: BTreeMap<_, _> = loc.calls.iter().collect();
             for (cframe, call) in csorted.iter() {
-                writeln!(w, "cfl={}", cframe.path())?;
-                writeln!(w, "cfn={}", &cframe.name)?;
+                writeln!(w, "cfl={}", sanitize_frame_text(cframe.path()))?;
+                writeln!(w, "cfn={}", sanitize_frame_text(&cframe.name))?;
                 writeln!(w, "calls={} {}", call.count, cframe.lineno.unwrap_or(0))?;
                 writeln!(w, "{} {}", frame.lineno.unwrap_or(0), call.inclusive)?;
             }

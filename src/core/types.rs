@@ -79,13 +79,31 @@ impl StackFrame {
     }
 }
 
+/// Strip control characters from text that was copied out of the profiled process.
+/// Frame names and paths are untrusted input and can contain arbitrary text; without
+/// this, a malicious process could inject terminal escape sequences into rbspy's
+/// console output, or extra lines and records into line-oriented output formats.
+pub(crate) fn sanitize_frame_text(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().any(char::is_control) {
+        std::borrow::Cow::Owned(s.chars().filter(|c| !c.is_control()).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 impl fmt::Display for StackFrame {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let lineno = match self.lineno {
             Some(lineno) => format!(":{}", lineno.to_string()),
             None => "".to_string(),
         };
-        write!(f, "{} - {}{}", self.name, self.path(), lineno)
+        write!(
+            f,
+            "{} - {}{}",
+            sanitize_frame_text(&self.name),
+            sanitize_frame_text(self.path()),
+            lineno
+        )
     }
 }
 
@@ -192,6 +210,33 @@ impl OutputFormat {
         Self::value_variants()
             .iter()
             .filter_map(ValueEnum::to_possible_value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_strips_control_characters() {
+        let frame = StackFrame {
+            name: "evil\x1b[2Jname\r\n".to_string(),
+            relative_path: "path\x1b]0;pwned\x07.rb".to_string(),
+            absolute_path: None,
+            lineno: Some(7),
+        };
+        assert_eq!(format!("{}", frame), "evil[2Jname - path]0;pwned.rb:7");
+    }
+
+    #[test]
+    fn test_display_leaves_ordinary_text_alone() {
+        let frame = StackFrame {
+            name: "block in <main>".to_string(),
+            relative_path: "a b/c.rb".to_string(),
+            absolute_path: None,
+            lineno: Some(1),
+        };
+        assert_eq!(format!("{}", frame), "block in <main> - a b/c.rb:1");
     }
 }
 

@@ -16,7 +16,11 @@ impl Stats {
         let frame = stack
             .iter()
             .rev()
-            .map(|frame| format!("{}", frame))
+            // Semicolons separate frames in the collapsed format, so any semicolon
+            // within a frame (frame text is controlled by the profiled process) has
+            // to be replaced to keep it from splitting the stack. Control characters
+            // are already stripped by StackFrame's Display implementation.
+            .map(|frame| frame.to_string().replace(';', ":"))
             .collect::<Vec<String>>()
             .join(";");
 
@@ -108,6 +112,20 @@ mod tests {
         );
         assert_contains(counts, "func1 - file1.rb:1;func2 - file2.rb:2", 2);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_frame_text_is_escaped() -> Result<()> {
+        let mut stats = Stats::default();
+        stats.record(&vec![StackFrame {
+            name: "evil;frame\ninjected 99".to_string(),
+            relative_path: "file;1.rb".to_string(),
+            absolute_path: None,
+            lineno: Some(1),
+        }])?;
+        let counts = &stats.counts;
+        assert_contains(counts, "evil:frameinjected 99 - file:1.rb:1", 1);
         Ok(())
     }
 

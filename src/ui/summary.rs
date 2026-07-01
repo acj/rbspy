@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::io;
 
-use crate::core::types::StackFrame;
+use crate::core::types::{sanitize_frame_text, StackFrame};
 
 struct Counts {
     self_: u64,
@@ -47,7 +47,15 @@ impl Stats {
             Some(lineno) => format!(":{}", lineno),
             None => "".to_string(),
         };
-        format!("{} - {}{}", frame.name, frame.relative_path, lineno)
+        // The summary is printed to the user's terminal, so strip control characters
+        // (e.g. escape sequences) that the profiled process may have planted in its
+        // frame names and paths.
+        format!(
+            "{} - {}{}",
+            sanitize_frame_text(&frame.name),
+            sanitize_frame_text(&frame.relative_path),
+            lineno
+        )
     }
 
     fn name_lineno(frame: &StackFrame) -> String {
