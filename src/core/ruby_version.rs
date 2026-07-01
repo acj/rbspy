@@ -8,6 +8,27 @@
  * Defines a bunch of submodules, one per Ruby version (`ruby_1_9_3`, `ruby_2_2_0`, etc.)
  */
 
+/// Upper bounds on data that we're willing to copy out of the target process in a single
+/// read. Lengths and sizes read from the profiled process (string lengths, table sizes,
+/// frame counts) are untrusted input: a corrupt or malicious target could otherwise make
+/// rbspy copy and allocate unbounded amounts of memory.
+pub(crate) const MAX_STRING_BYTES: usize = 1_000_000;
+pub(crate) const MAX_INSN_TABLE_ENTRIES: usize = 1_000_000;
+pub(crate) const MAX_CFPS: usize = 1_000_000;
+
+/// Validate a string length that was read from the target process, rejecting negative
+/// or implausibly large values before they're used to size a copy.
+pub(crate) fn validate_string_length(len: i64, addr: usize) -> anyhow::Result<usize> {
+    if len < 0 || len as usize > MAX_STRING_BYTES {
+        return Err(anyhow::anyhow!(
+            "string length {} for string at {:X} appears invalid",
+            len,
+            addr
+        ));
+    }
+    Ok(len as usize)
+}
+
 macro_rules! ruby_version_v_1_9_1(
     ($ruby_version:ident) => (
         pub mod $ruby_version {
@@ -774,7 +795,7 @@ macro_rules! get_ruby_string_1_9_1(
                 } else {
                     unsafe {
                         let addr = rstring.as_.heap.ptr as usize;
-                        let len = rstring.as_.heap.len as usize;
+                        let len = crate::core::ruby_version::validate_string_length(rstring.as_.heap.len as i64, addr)?;
                         source.copy(addr as usize, len).context("couldn't copy ruby string from heap")?
                     }
                 }
@@ -804,15 +825,17 @@ macro_rules! get_ruby_string_3_2_0(
                 // constant length, we need to read the length from the struct.
                 //
                 // See https://bugs.ruby-lang.org/issues/18239
+                let len = crate::core::ruby_version::validate_string_length(
+                    unsafe { rstring.as_.embed.len } as i64, addr)?;
                 let embedded_str_bytes = source.copy(
                     addr + std::mem::size_of::<RBasic>() + std::mem::size_of::<std::os::raw::c_long>(),
-                    unsafe { rstring.as_.embed.len } as usize
+                    len
                 ).context("couldn't copy rstring")?;
                 return String::from_utf8(embedded_str_bytes).context("couldn't convert ruby string bytes to string")
             } else {
                 unsafe {
                     let addr = rstring.as_.heap.ptr as usize;
-                    let len = rstring.as_.heap.len as usize;
+                    let len = crate::core::ruby_version::validate_string_length(rstring.as_.heap.len as i64, addr)?;
                     let heap_str_bytes = source.copy(addr as usize, len).context("couldn't copy ruby string from heap")?;
                     return String::from_utf8(heap_str_bytes).context("couldn't convert ruby string bytes to string");
                 }
@@ -828,9 +851,7 @@ macro_rules! get_ruby_string_3_3_0(
             source: &T
         ) -> Result<String> where T: ProcessMemory {
             let rstring: RString = source.copy_struct(addr).context("couldn't copy rstring")?;
-            if rstring.len > 1_000_000 {
-                return Err(anyhow::anyhow!("string length {} for string at {:X} appears invalid", rstring.len, addr));
-            }
+            let len = crate::core::ruby_version::validate_string_length(rstring.len as i64, addr)?;
             // See RSTRING_NOEMBED and RUBY_FL_USER1
             let is_embedded_string = rstring.basic.flags & 1 << 13 == 0;
             if is_embedded_string {
@@ -845,13 +866,12 @@ macro_rules! get_ruby_string_3_3_0(
                 // See https://bugs.ruby-lang.org/issues/18239
                 let embedded_str_bytes = source.copy(
                     addr + std::mem::size_of::<RBasic>() + std::mem::size_of::<std::os::raw::c_long>(),
-                    rstring.len as usize
+                    len
                 ).context("couldn't copy rstring")?;
                 return String::from_utf8(embedded_str_bytes).context("couldn't convert ruby string bytes to string")
             } else {
                 unsafe {
                     let addr = rstring.as_.heap.ptr as usize;
-                    let len = rstring.len as usize;
                     let heap_str_bytes = source.copy(addr as usize, len).context("couldn't copy ruby string from heap")?;
                     return String::from_utf8(heap_str_bytes).context("couldn't convert ruby string bytes to string");
                 }
@@ -1343,7 +1363,9 @@ macro_rules! get_lineno_1_9_0(
         ) -> Result<usize> where T: ProcessMemory {
             let pos = get_pos(iseq_struct, cfp)?;
             let t_size = iseq_struct.insn_info_size as usize;
-            if t_size == 0 {
+            if t_size > crate::core::ruby_version::MAX_INSN_TABLE_ENTRIES {
+                Err(format_err!("instruction table size {} appears invalid", t_size))
+            } else if t_size == 0 {
                 Err(format_err!("line number is not available"))
             } else if t_size == 1 {
                 let table: [iseq_insn_info_entry; 1] = source.copy_struct(iseq_struct.insn_info_table as usize)
@@ -1356,6 +1378,11 @@ macro_rules! get_lineno_1_9_0(
                     if pos == table[i].position as usize {
                         return Ok(table[i].line_no as usize)
                     } else if table[i].position as usize > pos {
+                        if i == 0 {
+                            // The first entry is already past `pos`, which means the table
+                            // is malformed or was copied mid-update.
+                            return Err(format_err!("line info table is inconsistent"));
+                        }
                         return Ok(table[i-1].line_no as usize)
                     }
                 }
@@ -1374,7 +1401,9 @@ macro_rules! get_lineno_2_0_0(
         ) -> Result<usize> where T: ProcessMemory {
             let pos = get_pos(iseq_struct, cfp)?;
             let t_size = iseq_struct.line_info_size as usize;
-            if t_size == 0 {
+            if t_size > crate::core::ruby_version::MAX_INSN_TABLE_ENTRIES {
+                Err(format_err!("instruction table size {} appears invalid", t_size))
+            } else if t_size == 0 {
                 Err(format_err!("line number is not available"))
             } else if t_size == 1 {
                 let table: [iseq_line_info_entry; 1] = source.copy_struct(iseq_struct.line_info_table as usize)
@@ -1387,6 +1416,11 @@ macro_rules! get_lineno_2_0_0(
                     if pos == table[i].position as usize {
                         return Ok(table[i].line_no as usize)
                     } else if table[i].position as usize > pos {
+                        if i == 0 {
+                            // The first entry is already past `pos`, which means the table
+                            // is malformed or was copied mid-update.
+                            return Err(format_err!("line info table is inconsistent"));
+                        }
                         return Ok(table[i-1].line_no as usize)
                     }
                 }
@@ -1405,7 +1439,9 @@ macro_rules! get_lineno_2_3_0(
         ) -> Result<usize> where T: ProcessMemory {
             let pos = get_pos(iseq_struct, cfp)?;
             let t_size = iseq_struct.line_info_size as usize;
-            if t_size == 0 {
+            if t_size > crate::core::ruby_version::MAX_INSN_TABLE_ENTRIES {
+                Err(format_err!("instruction table size {} appears invalid", t_size))
+            } else if t_size == 0 {
                 Err(format_err!("line number is not available"))
             } else if t_size == 1 {
                 let table: [iseq_line_info_entry; 1] = source.copy_struct(iseq_struct.line_info_table as usize)
@@ -1418,6 +1454,11 @@ macro_rules! get_lineno_2_3_0(
                     if pos == table[i].position as usize {
                         return Ok(table[i].line_no as usize)
                     } else if table[i].position as usize > pos {
+                        if i == 0 {
+                            // The first entry is already past `pos`, which means the table
+                            // is malformed or was copied mid-update.
+                            return Err(format_err!("line info table is inconsistent"));
+                        }
                         return Ok(table[i-1].line_no as usize)
                     }
                 }
@@ -1436,7 +1477,9 @@ macro_rules! get_lineno_2_5_0(
         ) -> Result<usize> where T: ProcessMemory {
             let pos = get_pos(iseq_struct, cfp)?;
             let t_size = iseq_struct.insns_info_size as usize;
-            if t_size == 0 {
+            if t_size > crate::core::ruby_version::MAX_INSN_TABLE_ENTRIES {
+                Err(format_err!("instruction table size {} appears invalid", t_size))
+            } else if t_size == 0 {
                 Err(format_err!("line number is not available"))
             } else if t_size == 1 {
                 let table: [iseq_insn_info_entry; 1] = source.copy_struct(iseq_struct.insns_info as usize)
@@ -1449,6 +1492,11 @@ macro_rules! get_lineno_2_5_0(
                     if pos == table[i].position as usize {
                         return Ok(table[i].line_no as usize)
                     } else if table[i].position as usize > pos {
+                        if i == 0 {
+                            // The first entry is already past `pos`, which means the table
+                            // is malformed or was copied mid-update.
+                            return Err(format_err!("line info table is inconsistent"));
+                        }
                         return Ok(table[i-1].line_no as usize)
                     }
                 }
@@ -1466,7 +1514,9 @@ macro_rules! get_lineno_2_6_0(
             source: &T,
         ) -> Result<usize> where T: ProcessMemory {
             let t_size = iseq_struct.insns_info.size as usize;
-            if t_size == 0 {
+            if t_size > crate::core::ruby_version::MAX_INSN_TABLE_ENTRIES {
+                Err(format_err!("instruction table size {} appears invalid", t_size))
+            } else if t_size == 0 {
                 Err(format_err!("line number is not available"))
             } else if t_size == 1 {
                 let table: [iseq_insn_info_entry; 1] = source.copy_struct(iseq_struct.insns_info.body as usize)
@@ -1496,7 +1546,7 @@ macro_rules! get_cfps(
                 return Err(crate::core::types::MemoryCopyError::Message(format!("stack base and cfp address out of sync. stack base: {:x}, cfp address: {:x}", stack_base as usize, cfp_address)).into());
             }
             let cfp_size = (stack_base as usize - cfp_address) as usize / std::mem::size_of::<rb_control_frame_t>();
-            if cfp_size > 1_000_000 {
+            if cfp_size > crate::core::ruby_version::MAX_CFPS {
                 return Err(crate::core::types::MemoryCopyError::Message(format!("invalid cfp vector length: {}", cfp_size)).into());
             }
 
