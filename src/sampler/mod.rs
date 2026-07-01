@@ -91,9 +91,8 @@ impl Sampler {
                 let process = match Process::new_with_retry(root_pid) {
                     Ok(process) => process,
                     Err(e) => {
-                        let _ = result_sender.send(
-                            Err(e).context("couldn't attach to process (is it running?)"),
-                        );
+                        let _ = result_sender
+                            .send(Err(e).context("couldn't attach to process (is it running?)"));
                         return;
                     }
                 };

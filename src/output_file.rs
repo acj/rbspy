@@ -29,7 +29,11 @@ pub fn create(path: &Path) -> Result<File> {
 
     let file = options.open(path).with_context(|| {
         #[cfg(unix)]
-        if path.symlink_metadata().map(|m| m.is_symlink()).unwrap_or(false) {
+        if path
+            .symlink_metadata()
+            .map(|m| m.is_symlink())
+            .unwrap_or(false)
+        {
             return format!(
                 "Refusing to write through the symlink {} while running as root. \
                  Please give the real path, or `-` for standard output.",
