@@ -122,7 +122,7 @@ impl Recorder {
             }
         }
         if let Some(raw_store) = raw_store {
-            raw_store.complete();
+            raw_store.complete()?;
         }
 
         // Check for errors from the child threads. Ignore errors unless every single thread

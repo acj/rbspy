@@ -60,8 +60,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn complete(self) {
-        drop(self.encoder)
+    pub fn complete(self) -> Result<(), Error> {
+        // Finish explicitly instead of relying on drop, which silently discards
+        // write errors (e.g. a full disk) and would leave a truncated file behind
+        // without telling anyone
+        self.encoder
+            .finish()
+            .context("couldn't finish writing raw data file")?;
+        Ok(())
     }
 }
 
