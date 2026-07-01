@@ -10,6 +10,12 @@ use winapi::um::timeapi;
 use crate::core::process::{Pid, Process, ProcessRetry};
 use crate::core::types::{MemoryCopyError, StackTrace};
 
+/// Maximum number of processes that a single sampler will record when
+/// `with_subprocesses` is enabled. Each tracked process costs a sampling thread, so
+/// without a cap a fork-heavy (or malicious) target could make rbspy, which often runs
+/// as root, exhaust the machine's resources.
+const MAX_TRACKED_PROCESSES: usize = 512;
+
 #[derive(Debug)]
 pub struct Sampler {
     done: Arc<AtomicBool>,
@@ -82,25 +88,49 @@ impl Sampler {
             // appear
             let done_clone = self.done.clone();
             std::thread::spawn(move || {
-                let process = Process::new_with_retry(root_pid)
-                    .expect("couldn't attach to process (is it running?)");
+                let process = match Process::new_with_retry(root_pid) {
+                    Ok(process) => process,
+                    Err(e) => {
+                        let _ = result_sender.send(
+                            Err(e).context("couldn't attach to process (is it running?)"),
+                        );
+                        return;
+                    }
+                };
                 let mut pids: HashSet<Pid> = HashSet::new();
+                let mut warned_about_process_cap = false;
                 // we need to exit this loop when the process we're monitoring exits, otherwise the
                 // sender channels won't get closed and rbspy will hang. So we check the done
                 // mutex.
                 while !done_clone.load(Ordering::Relaxed) {
-                    let mut descendents: Vec<Pid> = process
-                        .child_processes()
-                        .expect("Error finding descendents of pid")
-                        .into_iter()
-                        .map(|tuple| tuple.0)
-                        .collect();
-                    descendents.push(root_pid);
+                    // Sample the root process first so that it always gets one of the
+                    // available slots
+                    let mut descendents: Vec<Pid> = vec![root_pid];
+                    match process.child_processes() {
+                        Ok(children) => {
+                            descendents.extend(children.into_iter().map(|tuple| tuple.0))
+                        }
+                        Err(e) => {
+                            // This can fail transiently, e.g. if a process exits while we're
+                            // walking the process tree, so try again on the next tick
+                            debug!("Error finding descendents of {}: {:?}", root_pid, e);
+                        }
+                    };
 
                     for pid in descendents {
                         if pids.contains(&pid) {
                             // already recording it, no need to start a new recording thread
                             continue;
+                        }
+                        if pids.len() >= MAX_TRACKED_PROCESSES {
+                            if !warned_about_process_cap {
+                                eprintln!(
+                                    "Warning: only recording the first {} processes; ignoring additional subprocesses",
+                                    MAX_TRACKED_PROCESSES
+                                );
+                                warned_about_process_cap = true;
+                            }
+                            break;
                         }
                         pids.insert(pid);
                         let done_root = done.clone();
@@ -124,7 +154,9 @@ impl Sampler {
                                 force_version,
                                 on_cpu_only,
                             );
-                            result_sender.send(result).expect("couldn't send error");
+                            // The receiver may already be gone if rbspy is shutting down,
+                            // so a send failure here isn't fatal
+                            let _ = result_sender.send(result);
                             drop(result_sender);
 
                             if pid == root_pid {
@@ -154,7 +186,9 @@ impl Sampler {
                     force_version,
                     on_cpu_only,
                 );
-                result_sender.send(result).unwrap();
+                // The receiver may already be gone if rbspy is shutting down, so a send
+                // failure here isn't fatal
+                let _ = result_sender.send(result);
                 drop(result_sender);
             });
         }
