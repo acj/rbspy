@@ -597,16 +597,57 @@ fn spawn_subprocess(
             let uid: u32 = uid_str
                 .unwrap()
                 .parse::<u32>()
-                .context("Failed to parse UID")?;
+                .context("Failed to parse SUDO_UID")?;
+            let gid: u32 = std::env::var("SUDO_GID")
+                .context("SUDO_GID")?
+                .parse::<u32>()
+                .context("Failed to parse SUDO_GID")?;
+            let sudo_user = std::env::var("SUDO_USER").context("SUDO_USER")?;
+
+            // Resolve the program to an absolute path before spawning so that it's
+            // unambiguous which executable will run, instead of deferring to the PATH
+            // lookup that happens inside exec.
+            let resolved_prog = resolve_program_path(&prog)?;
             eprintln!(
-                "Dropping permissions: running Ruby command as user {}",
-                std::env::var("SUDO_USER").context("SUDO_USER")?
+                "Dropping permissions: running Ruby command {} as user {}",
+                resolved_prog.display(),
+                sudo_user
             );
-            Ok(std::process::Command::new(prog)
-                .uid(uid)
-                .args(args)
-                .spawn()
-                .context(context)?)
+
+            let mut cmd = std::process::Command::new(&resolved_prog);
+            cmd.args(args);
+            // Drop privileges in the child just before exec. The supplementary
+            // groups must be cleared first (while we're still root), and the gid
+            // must be changed before the uid, or else we no longer have permission
+            // to change it.
+            unsafe {
+                cmd.pre_exec(move || {
+                    let gid = gid as libc::gid_t;
+                    if libc::setgroups(1, &gid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setgid(gid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setuid(uid as libc::uid_t) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+
+            // Make user-identity variables match the user we're dropping to, and
+            // remove the sudo variables so that the child doesn't mistakenly
+            // believe it's running under sudo itself.
+            for var in ["SUDO_COMMAND", "SUDO_USER", "SUDO_UID", "SUDO_GID"] {
+                cmd.env_remove(var);
+            }
+            cmd.env("USER", &sudo_user).env("LOGNAME", &sudo_user);
+            if let Ok(Some(user)) = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
+                cmd.env("HOME", &user.dir);
+            }
+
+            Ok(cmd.spawn().context(context)?)
         } else {
             Ok(std::process::Command::new(prog)
                 .args(args)
@@ -622,6 +663,32 @@ fn spawn_subprocess(
             .spawn()
             .context(context)?)
     }
+}
+
+/// Find the executable that a PATH lookup of `prog` would run, so that we know exactly
+/// what we're going to execute before dropping privileges. Names that already contain a
+/// directory component are used as-is, like in a shell.
+#[cfg(unix)]
+fn resolve_program_path(prog: &str) -> Result<PathBuf> {
+    let path = std::path::Path::new(prog);
+    if path.components().count() > 1 {
+        return Ok(path.to_path_buf());
+    }
+
+    let path_var = std::env::var_os("PATH")
+        .ok_or_else(|| format_err!("PATH is not set, so '{}' can't be located", prog))?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(prog);
+        if let Ok(metadata) = candidate.metadata() {
+            if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(format_err!("Couldn't find '{}' in PATH", prog))
 }
 
 #[cfg(test)]
