@@ -789,9 +789,13 @@ macro_rules! get_ruby_string_1_9_1(
                 // See RSTRING_NOEMBED and RUBY_FL_USER1
                 let is_embedded_string = rstring.basic.flags & 1 << 13 == 0;
                 if is_embedded_string {
-                    unsafe { std::ffi::CStr::from_ptr(rstring_as_array(rstring).as_ref().as_ptr()) }
-                    .to_bytes()
-                    .to_vec()
+                    // The embedded string is not guaranteed to be NUL-terminated, so
+                    // don't scan past the end of the copied array looking for one
+                    let ary = unsafe { rstring_as_array(rstring) };
+                    ary.iter()
+                        .take_while(|&&c| c != 0)
+                        .map(|&c| c as u8)
+                        .collect::<Vec<u8>>()
                 } else {
                     unsafe {
                         let addr = rstring.as_.heap.ptr as usize;
