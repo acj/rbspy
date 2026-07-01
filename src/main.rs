@@ -233,7 +233,11 @@ fn do_main() -> Result<(), Error> {
             if output.display().to_string() == "-" {
                 report(format, &mut input, &mut std::io::stdout())
             } else {
-                report(format, &mut input, &mut std::fs::File::create(output)?)
+                report(
+                    format,
+                    &mut input,
+                    &mut rbspy::output_file::create(&output)?,
+                )
             }
         }
         SubCmd::Inspect {

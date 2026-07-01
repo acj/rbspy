@@ -1,5 +1,4 @@
-use anyhow::{Context, Error, Result};
-use std::fs::File;
+use anyhow::{Error, Result};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -118,10 +117,7 @@ impl Recorder {
             if out_path.display().to_string() == "-" {
                 out.complete(&mut std::io::stdout())?;
             } else {
-                let mut out_file = File::create(&out_path).context(format!(
-                    "Failed to create output file {}",
-                    &out_path.display()
-                ))?;
+                let mut out_file = crate::output_file::create(&out_path)?;
                 out.complete(&mut out_file)?;
             }
         }

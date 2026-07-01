@@ -39,8 +39,8 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(out_path: &Path, sample_rate: u32) -> Result<Store, io::Error> {
-        let file = File::create(out_path)?;
+    pub fn new(out_path: &Path, sample_rate: u32) -> Result<Store, Error> {
+        let file = crate::output_file::create(out_path)?;
         let mut encoder = flate2::write::GzEncoder::new(file, Compression::default());
         encoder.write_all("rbspy02\n".as_bytes())?;
 

@@ -33,6 +33,8 @@ use core::ruby_spy::RubySpy;
 use anyhow::Result;
 
 mod core;
+#[doc(hidden)]
+pub mod output_file;
 pub mod recorder;
 pub mod sampler;
 mod storage;
