@@ -1,6 +1,7 @@
 /// Core types used throughout rbspy: StackFrame and StackTrace
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 use std::{self, convert::From};
@@ -60,9 +61,17 @@ pub struct StackScannerCache {
     // execution context (ruby 3+). The word's address is stable, but the pointer stored in it
     // changes as the target switches threads, so it must be re-read on every sample.
     ec_pointer_slot: Cell<Option<usize>>,
+    // Resolved C function names, keyed by (method entry address, method definition address,
+    // method id). Method ids are never reused within a process, so entries stay valid even if
+    // the method entry object is garbage collected.
+    cfunc_names: RefCell<HashMap<(usize, usize, usize), String>>,
 }
 
 impl StackScannerCache {
+    // Far more distinct C methods than any real process defines; bounds memory use if a target
+    // somehow generates method entries without limit.
+    const MAX_CFUNC_NAMES: usize = 100_000;
+
     pub fn ec_pointer_slot(&self) -> Option<usize> {
         self.ec_pointer_slot.get()
     }
@@ -73,6 +82,17 @@ impl StackScannerCache {
 
     pub fn clear_ec_pointer_slot(&self) {
         self.ec_pointer_slot.set(None);
+    }
+
+    pub fn cfunc_name(&self, key: &(usize, usize, usize)) -> Option<String> {
+        self.cfunc_names.borrow().get(key).cloned()
+    }
+
+    pub fn store_cfunc_name(&self, key: (usize, usize, usize), name: &str) {
+        let mut names = self.cfunc_names.borrow_mut();
+        if names.len() < Self::MAX_CFUNC_NAMES {
+            names.insert(key, name.to_string());
+        }
     }
 }
 
