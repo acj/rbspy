@@ -1,6 +1,7 @@
 /// Core types used throughout rbspy: StackFrame and StackTrace
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 use std::{self, convert::From};
@@ -57,11 +58,15 @@ pub struct StackScannerCache {
     // Address of the field in the main ractor struct that holds the pointer to the current
     // execution context on ruby 3+
     ec_pointer_address: Cell<Option<usize>>,
+    // Resolved C function names, keyed by (method entry address, method definition address,
+    // method id)
+    cfunc_names: RefCell<HashMap<(usize, usize, usize), String>>,
 }
 
 impl StackScannerCache {
-    // Far more entries than any real process's method or iseq count; bounds memory use if a
-    // target somehow generates method entries or iseqs without limit.
+    // Far more distinct C methods than any real process defines; bounds memory use if a target
+    // somehow generates method entries without limit.
+    const MAX_CFUNC_NAMES: usize = 100_000;
 
     pub fn ec_pointer_address(&self) -> Option<usize> {
         self.ec_pointer_address.get()
@@ -73,6 +78,17 @@ impl StackScannerCache {
 
     pub fn clear_ec_pointer_address(&self) {
         self.ec_pointer_address.set(None);
+    }
+
+    pub fn cfunc_name(&self, key: &(usize, usize, usize)) -> Option<String> {
+        self.cfunc_names.borrow().get(key).cloned()
+    }
+
+    pub fn store_cfunc_name(&self, key: (usize, usize, usize), name: &str) {
+        let mut names = self.cfunc_names.borrow_mut();
+        if names.len() < Self::MAX_CFUNC_NAMES {
+            names.insert(key, name.to_string());
+        }
     }
 }
 

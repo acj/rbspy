@@ -524,7 +524,7 @@ macro_rules! get_stack_trace(
                 } else {
                     let mut frame = StackFrame::unknown_c_function();
                     if let Some(global_symbols_addr) = ruby_global_symbols_address_location {
-                        match get_cfunc_name(cfp, global_symbols_addr, source, pid) {
+                        match get_cfunc_name(cfp, global_symbols_addr, source, pid, cache) {
                             Ok(name) => {
                                 frame = StackFrame{
                                     name: format!("{} [c function]", name),
@@ -1531,7 +1531,7 @@ macro_rules! get_cfunc_name_unsupported(
             Ok(false)
         }
 
-        fn get_cfunc_name<T: ProcessMemory>(_cfp: &rb_control_frame_t, _global_symbols_address: usize, _source: &T, _pid: Pid) -> Result<String> {
+        fn get_cfunc_name<T: ProcessMemory>(_cfp: &rb_control_frame_t, _global_symbols_address: usize, _source: &T, _pid: Pid, _cache: &crate::core::types::StackScannerCache) -> Result<String> {
             return Err(format_err!("C function resolution is not supported for this version of Ruby").into());
         }
     )
@@ -1637,12 +1637,12 @@ macro_rules! get_cfunc_name(
             cfp: &rb_control_frame_t,
             global_symbols_address: usize,
             source: &T,
-            _pid: Pid
+            _pid: Pid,
+            cache: &crate::core::types::StackScannerCache,
         ) -> Result<String> {
             const IMEMO_MASK: usize = 0x0f;
 
             let cme = locate_method_entry(&cfp.ep, source)?;
-            let (class_path, singleton) = get_classpath(cme, true, source).unwrap_or(("".to_string(), false));
 
             let imemo: rb_method_entry_struct = source.copy_struct(cme).context(cme)?;
             if imemo.def.is_null() {
@@ -1654,6 +1654,18 @@ macro_rules! get_cfunc_name(
             if ttype != imemo_type_imemo_ment as usize {
                 return Err(format_err!("Not a method entry").into());
             }
+
+            let def: rb_method_definition_struct = source.copy_struct(imemo.def as usize).context(imemo.def as usize)?;
+            let method_id = def.original_id as usize;
+
+            // A method's qualified name never changes, so once we've resolved it we can skip the
+            // classpath lookup and the walk of the target's global symbol table on later samples.
+            let cache_key = (cme, imemo.def as usize, method_id);
+            if let Some(name) = cache.cfunc_name(&cache_key) {
+                return Ok(name);
+            }
+
+            let (class_path, singleton) = get_classpath(cme, true, source).unwrap_or(("".to_string(), false));
 
             #[allow(non_camel_case_types)]
             type rb_id_serial_t = u32;
@@ -1670,8 +1682,6 @@ macro_rules! get_cfunc_name(
             }
 
             let global_symbols: rb_symbols_t = source.copy_struct(global_symbols_address as usize).context(global_symbols_address as usize)?;
-            let def: rb_method_definition_struct = source.copy_struct(imemo.def as usize).context(imemo.def as usize)?;
-            let method_id = def.original_id as usize;
 
             // rb_id_to_serial
             let mut serial = method_id;
@@ -1717,7 +1727,9 @@ macro_rules! get_cfunc_name(
             let rstring_remote_ptr = (array_ptr as usize) + offset * std::mem::size_of::<usize>();
             let rstring_ptr: usize = source.copy_struct(rstring_remote_ptr as usize).context(rstring_remote_ptr as usize)?;
             let method_name = get_ruby_string(rstring_ptr as usize, source)?;
-            Ok(qualified_method_name(&class_path, &method_name, singleton))
+            let qualified_name = qualified_method_name(&class_path, &method_name, singleton);
+            cache.store_cfunc_name(cache_key, &qualified_name);
+            Ok(qualified_name)
         }
     )
 );
