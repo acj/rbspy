@@ -68,12 +68,29 @@ pub struct StackScannerCache {
     // Resolved class paths, keyed by (method entry address, method definition address). Used on
     // ruby 3.3+, where every method frame's name is prefixed with the owning class's path.
     classpaths: RefCell<HashMap<(usize, usize), (String, bool)>>,
+    // Fully resolved frame details, keyed by (iseq address, method entry address, method
+    // definition address). Everything about a frame except its line number is stable for that
+    // triple, so on a cache hit only the line number has to be re-resolved.
+    frames: RefCell<HashMap<(usize, usize, usize), CachedFrameInfo>>,
+}
+
+/// Frame details that are stable for a given (iseq, method entry, method definition) triple,
+/// cached so that a frame only has to be fully resolved the first time it is seen.
+#[derive(Debug, Clone)]
+pub struct CachedFrameInfo {
+    pub name: String,
+    pub relative_path: String,
+    pub absolute_path: Option<String>,
+    /// Address of the iseq constant body that line numbers are resolved from. It also guards
+    /// against stale entries: it must match the body pointer freshly read from the control
+    /// frame's iseq on every sample, so a replaced iseq forces a full re-resolution.
+    pub body_ptr: usize,
 }
 
 impl StackScannerCache {
-    // Far more distinct C methods than any real process defines; bounds memory use if a target
-    // somehow generates method entries without limit.
-    const MAX_CFUNC_NAMES: usize = 100_000;
+    // Far more entries than any real process's method or iseq count; bounds memory use if a
+    // target somehow generates method entries or iseqs without limit.
+    const MAX_ENTRIES_PER_CACHE: usize = 100_000;
 
     pub fn ec_pointer_slot(&self) -> Option<usize> {
         self.ec_pointer_slot.get()
@@ -93,7 +110,7 @@ impl StackScannerCache {
 
     pub fn store_cfunc_name(&self, key: (usize, usize, usize), name: &str) {
         let mut names = self.cfunc_names.borrow_mut();
-        if names.len() < Self::MAX_CFUNC_NAMES {
+        if names.len() < Self::MAX_ENTRIES_PER_CACHE {
             names.insert(key, name.to_string());
         }
     }
@@ -104,8 +121,19 @@ impl StackScannerCache {
 
     pub fn store_classpath(&self, key: (usize, usize), classpath: &str, singleton: bool) {
         let mut classpaths = self.classpaths.borrow_mut();
-        if classpaths.len() < Self::MAX_CFUNC_NAMES {
+        if classpaths.len() < Self::MAX_ENTRIES_PER_CACHE {
             classpaths.insert(key, (classpath.to_string(), singleton));
+        }
+    }
+
+    pub fn frame(&self, key: &(usize, usize, usize)) -> Option<CachedFrameInfo> {
+        self.frames.borrow().get(key).cloned()
+    }
+
+    pub fn store_frame(&self, key: (usize, usize, usize), info: CachedFrameInfo) {
+        let mut frames = self.frames.borrow_mut();
+        if frames.len() < Self::MAX_ENTRIES_PER_CACHE {
+            frames.insert(key, info);
         }
     }
 }

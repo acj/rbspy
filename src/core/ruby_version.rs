@@ -1268,10 +1268,40 @@ macro_rules! get_stack_frame_3_3_0(
             cache: &crate::core::types::StackScannerCache,
         ) -> Result<StackFrame> where T: ProcessMemory {
             let cme = locate_method_entry(&cfp.ep, source)?;
+            let imemo: Option<rb_method_entry_struct> = if cme != 0 {
+                Some(source.copy_struct(cme).context(cme)?)
+            } else {
+                None
+            };
+
+            // Everything about a frame except its line number is stable for a given (iseq,
+            // method entry, method definition) triple, so after the first full resolution we
+            // only re-read what the line number lookup needs. The cached body pointer has to
+            // match the pointer freshly read from the control frame's iseq, which guards
+            // against the iseq having been replaced since the frame was cached.
+            let frame_key = (cfp.iseq as usize, cme, imemo.map_or(0, |m| m.def as usize));
+            if let Some(cached) = cache.frame(&frame_key) {
+                if cached.body_ptr == iseq_struct.body as usize {
+                    let body: rb_iseq_constant_body = source.copy_struct(cached.body_ptr)
+                        .context("couldn't copy rb_iseq_constant_body")?;
+                    return Ok(StackFrame{
+                        name: cached.name,
+                        relative_path: cached.relative_path,
+                        absolute_path: cached.absolute_path,
+                        lineno: match get_lineno(&body, cfp, source) {
+                            Ok(lineno) => Some(lineno),
+                            Err(e) => {
+                                warn!("couldn't get lineno: {}", e);
+                                None
+                            },
+                        }
+                    });
+                }
+            }
+
             let mut class_path = "".to_string();
             let mut singleton = false;
-            let iseq = if cme != 0 {
-                let imemo: rb_method_entry_struct = source.copy_struct(cme).context(cme)?;
+            let iseq = if let Some(imemo) = imemo {
                 let method_type = source.copy(imemo.def as usize, 1).context(imemo.def as usize)?;
                 // https://github.com/ruby/ruby/blob/v3_3_0/internal/imemo.h#L21
                 let method_type = method_type[0] & 0xf;
@@ -1340,6 +1370,13 @@ macro_rules! get_stack_frame_3_3_0(
             let label = get_ruby_string(body.location.label as usize, source)?;
             let base_label = get_ruby_string(body.location.base_label as usize, source)?;
             let full_label = profile_frame_full_label(&class_path, &label, &base_label, &method_name, singleton);
+
+            cache.store_frame(frame_key, crate::core::types::CachedFrameInfo{
+                name: full_label.clone(),
+                relative_path: path.clone(),
+                absolute_path: Some(absolute_path.clone()),
+                body_ptr: iseq.body as usize,
+            });
 
             Ok(StackFrame{
                 name: full_label,
@@ -3199,6 +3236,35 @@ mod tests {
         );
     }
 
+    // Sampling twice with the same cache must produce identical traces: the second call takes
+    // the cached execution context and frame metadata paths instead of the full resolution.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn test_get_ruby_stack_trace_cache_consistency_3_3_0() {
+        let source = coredump_with_classes_3_3_0();
+        let vm_addr = 0x7f58cb7f4988;
+        let global_symbols_addr = Some(0x7f58cb7e3c60);
+        let cache = crate::core::types::StackScannerCache::default();
+        let sample = || {
+            ruby_version::ruby_3_3_0::get_stack_trace::<CoreDump>(
+                0,
+                vm_addr,
+                global_symbols_addr,
+                &source,
+                0,
+                false,
+                &cache,
+            )
+            .unwrap()
+            .unwrap()
+            .trace
+        };
+        let first = sample();
+        let second = sample();
+        assert_eq!(real_stack_trace_with_classes_3_3_0(), first);
+        assert_eq!(first, second);
+    }
+
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn test_get_ruby_stack_trace_3_3_1() {
@@ -3544,6 +3610,35 @@ mod tests {
             real_complex_trace_with_classes_3_4_5(),
             stack_trace.unwrap().trace
         );
+    }
+
+    // Same as test_get_ruby_stack_trace_cache_consistency_3_3_0, but against a trace with
+    // singleton classes, modules, and anonymous classes in it.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn test_get_ruby_stack_trace_cache_consistency_complex_3_4_5() {
+        let source = coredump_complex_3_4_5();
+        let vm_addr = 0x7f271feb5390;
+        let global_symbols_addr = Some(0x7f271fea3dc0);
+        let cache = crate::core::types::StackScannerCache::default();
+        let sample = || {
+            ruby_version::ruby_3_3_0::get_stack_trace::<CoreDump>(
+                0,
+                vm_addr,
+                global_symbols_addr,
+                &source,
+                0,
+                false,
+                &cache,
+            )
+            .unwrap()
+            .unwrap()
+            .trace
+        };
+        let first = sample();
+        let second = sample();
+        assert_eq!(real_complex_trace_with_classes_3_4_5(), first);
+        assert_eq!(first, second);
     }
 
     #[cfg(target_pointer_width = "64")]
