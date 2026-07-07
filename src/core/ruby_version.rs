@@ -352,7 +352,8 @@ macro_rules! get_execution_context_from_thread(
         pub fn get_execution_context<T: ProcessMemory>(
             current_thread_address_ptr: usize,
             _ruby_vm_address_ptr: usize,
-            source: &T
+            source: &T,
+            _cache: &crate::core::types::StackScannerCache,
         ) -> Result<usize> {
             source.copy_struct(current_thread_address_ptr)
                 .context("couldn't read current thread pointer")
@@ -535,10 +536,28 @@ macro_rules! get_execution_context_from_vm(
         pub fn get_execution_context<T: ProcessMemory>(
             _current_thread_address_ptr: usize,
             ruby_vm_address_ptr: usize,
-            source: &T
+            source: &T,
+            cache: &crate::core::types::StackScannerCache,
         ) -> Result<usize> {
             let vm_addr: usize = source.copy_struct(ruby_vm_address_ptr)
                 .context("couldn't read Ruby VM pointer")?;
+
+            // Fast path: on a previous sample we located the word inside the main ractor struct
+            // that holds the running execution context pointer. That word's address never
+            // changes (the main ractor lives for the life of the process), so we can re-read just
+            // the pointer instead of re-scanning the VM and ractor structs on every sample. The
+            // pointer's value does change as the target switches threads, hence the fresh read.
+            if let Some(slot) = cache.ec_pointer_slot() {
+                match source.copy_struct::<usize>(slot) {
+                    Ok(ec_addr) if validate_execution_context(ec_addr, vm_addr, source).is_some() => {
+                        return Ok(ec_addr);
+                    }
+                    // The slot no longer holds a valid execution context pointer; fall through
+                    // to a full scan, which re-caches the slot if it succeeds.
+                    _ => cache.clear_ec_pointer_slot(),
+                }
+            }
+
             let main_thread_addr = scan_words(vm_addr, VM_SCAN_CHUNKS, source, |word| {
                 is_running_thread(word, vm_addr, source)
             })
@@ -554,7 +573,8 @@ macro_rules! get_execution_context_from_vm(
                     None => false,
                 }
             });
-            if let Some((ec_addr, _)) = running {
+            if let Some((ec_addr, slot)) = running {
+                cache.set_ec_pointer_slot(slot);
                 return Ok(ec_addr);
             }
 
@@ -583,8 +603,9 @@ macro_rules! get_stack_trace(
             source: &T,
             pid: Pid,
             on_cpu: bool,
+            cache: &crate::core::types::StackScannerCache,
         ) -> Result<Option<StackTrace>, anyhow::Error> {
-            let current_thread_addr: usize = get_execution_context(ruby_current_thread_address_location, ruby_vm_address_location, source)
+            let current_thread_addr: usize = get_execution_context(ruby_current_thread_address_location, ruby_vm_address_location, source, cache)
                 .context("couldn't get execution context")?;
             let thread: $thread_type = source.copy_struct(current_thread_addr)
                 .context("couldn't get current thread")?;
@@ -707,7 +728,7 @@ macro_rules! get_stack_trace(
             }
 
             // finally, try to get an actual stack trace from the source and see if it works
-            get_stack_trace(candidate_thread_addr_ptr, 0, None, source, 0, false).is_ok()
+            get_stack_trace(candidate_thread_addr_ptr, 0, None, source, 0, false, &Default::default()).is_ok()
         }
     )
 );
@@ -2477,6 +2498,7 @@ mod tests {
             &coredump_1_9_3(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2494,6 +2516,7 @@ mod tests {
             &coredump_2_1_6(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2512,6 +2535,7 @@ mod tests {
             &coredump_2_1_6_c_function(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2529,6 +2553,7 @@ mod tests {
             &coredump_2_4_0(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2546,6 +2571,7 @@ mod tests {
             &coredump_2_5_0(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2564,6 +2590,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2582,6 +2609,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2600,6 +2628,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2618,6 +2647,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2636,6 +2666,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2654,6 +2685,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2672,6 +2704,7 @@ mod tests {
             &coredump_2_7_2(),
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2691,6 +2724,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2710,6 +2744,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2729,6 +2764,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2748,6 +2784,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2767,6 +2804,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2786,6 +2824,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2805,6 +2844,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2824,6 +2864,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2843,6 +2884,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2862,6 +2904,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2881,6 +2924,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2900,6 +2944,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2919,6 +2964,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2938,6 +2984,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2957,6 +3004,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2976,6 +3024,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -2995,6 +3044,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3014,6 +3064,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3033,6 +3084,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3052,6 +3104,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3071,6 +3124,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3090,6 +3144,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3108,6 +3163,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3126,6 +3182,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3144,6 +3201,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3162,6 +3220,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3180,6 +3239,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3198,6 +3258,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_2_0(), stack_trace.unwrap().trace);
@@ -3216,6 +3277,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3235,6 +3297,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -3337,9 +3400,14 @@ mod tests {
             thread_addr,
         );
 
-        let found =
-            ruby_version::ruby_3_3_0::get_execution_context(0, vm_ptr_slot, &memory).unwrap();
-        assert_eq!(ec_addr, found);
+        // The second lookup takes the cached EC pointer slot found by the first
+        let cache = crate::core::types::StackScannerCache::default();
+        for _ in 0..2 {
+            let found =
+                ruby_version::ruby_3_3_0::get_execution_context(0, vm_ptr_slot, &memory, &cache)
+                    .unwrap();
+            assert_eq!(ec_addr, found);
+        }
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -3355,6 +3423,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3374,6 +3443,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3393,6 +3463,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3411,6 +3482,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3429,6 +3501,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3447,6 +3520,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3465,6 +3539,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3483,6 +3558,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3501,6 +3577,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3519,6 +3596,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3537,6 +3615,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3555,6 +3634,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3573,6 +3653,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3591,6 +3672,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3609,6 +3691,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3627,6 +3710,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3645,6 +3729,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3663,6 +3748,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3681,6 +3767,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(
@@ -3702,6 +3789,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3720,6 +3808,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3738,6 +3827,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3756,6 +3846,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3774,6 +3865,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3792,6 +3884,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap();
         assert_eq!(real_stack_trace_3_3_0(), stack_trace.unwrap().trace);
@@ -3810,6 +3903,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3829,6 +3923,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3848,6 +3943,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3867,6 +3963,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3886,6 +3983,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3904,6 +4002,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3923,6 +4022,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
@@ -3942,6 +4042,7 @@ mod tests {
             &source,
             0,
             false,
+            &Default::default(),
         )
         .unwrap()
         .unwrap();
