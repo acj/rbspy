@@ -1,4 +1,5 @@
 /// Core types used throughout rbspy: StackFrame and StackTrace
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::time::SystemTime;
@@ -36,12 +37,41 @@ pub struct StackTrace {
     pub on_cpu: Option<bool>,
 }
 
-pub type StackTraceFn =
-    fn(usize, usize, Option<usize>, &Process, Pid, bool) -> Result<Option<StackTrace>>;
+pub type StackTraceFn = fn(
+    usize,
+    usize,
+    Option<usize>,
+    &Process,
+    Pid,
+    bool,
+    &StackScannerCache,
+) -> Result<Option<StackTrace>>;
 
 pub type IsMaybeThreadFn = fn(usize, usize, &Process, &[proc_maps::MapRange]) -> bool;
 
-pub type GetExecutionContextFn = fn(usize, usize, &Process) -> Result<usize>;
+pub type GetExecutionContextFn = fn(usize, usize, &Process, &StackScannerCache) -> Result<usize>;
+
+/// State that is expensive to discover but stable for the lifetime of the profiled process
+#[derive(Debug, Default)]
+pub struct StackScannerCache {
+    // Address of the field in the main ractor struct that holds the pointer to the current
+    // execution context on ruby 3+
+    ec_pointer_slot: Cell<Option<usize>>,
+}
+
+impl StackScannerCache {
+    pub fn ec_pointer_slot(&self) -> Option<usize> {
+        self.ec_pointer_slot.get()
+    }
+
+    pub fn set_ec_pointer_slot(&self, slot: usize) {
+        self.ec_pointer_slot.set(Some(slot));
+    }
+
+    pub fn clear_ec_pointer_slot(&self) {
+        self.ec_pointer_slot.set(None);
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum MemoryCopyError {
