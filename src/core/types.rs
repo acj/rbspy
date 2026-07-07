@@ -61,6 +61,9 @@ pub struct StackScannerCache {
     // Resolved C function names, keyed by (method entry address, method definition address,
     // method id)
     cfunc_names: RefCell<HashMap<(usize, usize, usize), String>>,
+    // Resolved class paths, keyed by (method entry address, method definition address). Used on
+    // ruby 3.3+, where every method frame's name is prefixed with the owning class's path.
+    classpaths: RefCell<HashMap<(usize, usize), (String, bool)>>,
 }
 
 impl StackScannerCache {
@@ -88,6 +91,17 @@ impl StackScannerCache {
         let mut names = self.cfunc_names.borrow_mut();
         if names.len() < Self::MAX_CFUNC_NAMES {
             names.insert(key, name.to_string());
+        }
+    }
+
+    pub fn classpath(&self, key: &(usize, usize)) -> Option<(String, bool)> {
+        self.classpaths.borrow().get(key).cloned()
+    }
+
+    pub fn store_classpath(&self, key: (usize, usize), classpath: &str, singleton: bool) {
+        let mut classpaths = self.classpaths.borrow_mut();
+        if classpaths.len() < Self::MAX_CFUNC_NAMES {
+            classpaths.insert(key, (classpath.to_string(), singleton));
         }
     }
 }
