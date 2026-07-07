@@ -42,6 +42,10 @@ impl Stats {
         entry.total += 1;
     }
 
+    fn frame_key(frame: &StackFrame) -> (&str, &str, Option<usize>) {
+        (&frame.name, &frame.relative_path, frame.lineno)
+    }
+
     fn name_function(frame: &StackFrame) -> String {
         let lineno = match frame.lineno {
             Some(lineno) => format!(":{}", lineno),
@@ -60,13 +64,22 @@ impl Stats {
             return;
         }
         self.total_traces += 1;
-        self.inc_self(Stats::name_function(&stack[0]));
-        let mut set: HashSet<String> = HashSet::new();
-        for frame in stack {
-            set.insert(Stats::name_function(frame));
-        }
-        for name in set.into_iter() {
-            self.inc_tot(name);
+        // Deduplicate on borrowed frame data so that a display name only has to be formatted
+        // (and allocated) once per unique function in the trace. This runs for every sampled
+        // trace, so avoiding the per-frame string allocations keeps rbspy's own CPU usage down.
+        let mut seen: HashSet<(&str, &str, Option<usize>)> = HashSet::with_capacity(stack.len());
+        for (i, frame) in stack.iter().enumerate() {
+            if seen.insert(Stats::frame_key(frame)) {
+                let entry = self
+                    .counts
+                    .entry(Stats::name_function(frame))
+                    .or_insert(Counts { self_: 0, total: 0 });
+                entry.total += 1;
+                // The first frame is always new to `seen`, so the self count lands here
+                if i == 0 {
+                    entry.self_ += 1;
+                }
+            }
         }
     }
 

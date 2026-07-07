@@ -542,13 +542,6 @@ macro_rules! get_stack_trace(
                     continue;
                 }
             }
-            let thread_id = match get_thread_id(&thread, source) {
-                Ok(tid) => Some(tid),
-                Err(e) => {
-                    debug!("Couldn't get thread ID: {}", e);
-                    None
-                },
-            };
             Ok(Some(StackTrace{trace, pid: Some(pid), thread_id, time: Some(SystemTime::now()), on_cpu: Some(on_cpu)}))
         }
 
