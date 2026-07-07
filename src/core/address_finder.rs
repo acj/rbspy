@@ -100,7 +100,12 @@ fn get_current_thread_address(
 ) -> Result<usize> {
     if ruby_version.semver_version >= Version::new(3, 0, 0) {
         // Current thread is not directly accessible on Ruby 3+, so get it from the VM
-        return (ruby_version.get_execution_context_fn)(0, vm_address, process);
+        return (ruby_version.get_execution_context_fn)(
+            0,
+            vm_address,
+            process,
+            &crate::core::types::StackScannerCache::default(),
+        );
     }
 
     let symbol = ruby_execution_context_symbol(&ruby_version.semver_version);

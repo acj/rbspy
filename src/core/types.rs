@@ -1,5 +1,7 @@
 /// Core types used throughout rbspy: StackFrame and StackTrace
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
 use std::time::SystemTime;
 use std::{self, convert::From};
@@ -36,12 +38,63 @@ pub struct StackTrace {
     pub on_cpu: Option<bool>,
 }
 
-pub type StackTraceFn =
-    fn(usize, usize, Option<usize>, &Process, Pid, bool) -> Result<Option<StackTrace>>;
+pub type StackTraceFn = fn(
+    usize,
+    usize,
+    Option<usize>,
+    &Process,
+    Pid,
+    bool,
+    &StackScannerCache,
+) -> Result<Option<StackTrace>>;
 
 pub type IsMaybeThreadFn = fn(usize, usize, &Process, &[proc_maps::MapRange]) -> bool;
 
-pub type GetExecutionContextFn = fn(usize, usize, &Process) -> Result<usize>;
+pub type GetExecutionContextFn = fn(usize, usize, &Process, &StackScannerCache) -> Result<usize>;
+
+/// State that is expensive to discover but stable for the lifetime of the profiled process.
+/// Keeping it here lets the per-sample stack scanners avoid re-discovering it on every sample,
+/// which reduces the number of cross-process memory reads rbspy makes (and hence its CPU usage).
+#[derive(Debug, Default)]
+pub struct StackScannerCache {
+    // Address of the word inside the main ractor struct that holds the pointer to the current
+    // execution context (ruby 3+). The word's address is stable, but the pointer stored in it
+    // changes as the target switches threads, so it must be re-read on every sample.
+    ec_pointer_slot: Cell<Option<usize>>,
+    // Resolved C function names, keyed by (method entry address, method definition address,
+    // method id). Method ids are never reused within a process, so entries stay valid even if
+    // the method entry object is garbage collected.
+    cfunc_names: RefCell<HashMap<(usize, usize, usize), String>>,
+}
+
+impl StackScannerCache {
+    // Far more distinct C methods than any real process defines; bounds memory use if a target
+    // somehow generates method entries without limit.
+    const MAX_CFUNC_NAMES: usize = 100_000;
+
+    pub fn ec_pointer_slot(&self) -> Option<usize> {
+        self.ec_pointer_slot.get()
+    }
+
+    pub fn set_ec_pointer_slot(&self, slot: usize) {
+        self.ec_pointer_slot.set(Some(slot));
+    }
+
+    pub fn clear_ec_pointer_slot(&self) {
+        self.ec_pointer_slot.set(None);
+    }
+
+    pub fn cfunc_name(&self, key: &(usize, usize, usize)) -> Option<String> {
+        self.cfunc_names.borrow().get(key).cloned()
+    }
+
+    pub fn store_cfunc_name(&self, key: (usize, usize, usize), name: &str) {
+        let mut names = self.cfunc_names.borrow_mut();
+        if names.len() < Self::MAX_CFUNC_NAMES {
+            names.insert(key, name.to_string());
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum MemoryCopyError {

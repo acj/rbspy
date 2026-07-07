@@ -4,7 +4,7 @@ use anyhow::{Context, Error, Result};
 use spytools::ProcessInfo;
 
 use crate::core::process::{Pid, Process, ProcessRetry};
-use crate::core::types::{MemoryCopyError, StackTrace};
+use crate::core::types::{MemoryCopyError, StackScannerCache, StackTrace};
 
 use super::address_finder::RubyVM;
 
@@ -12,6 +12,7 @@ pub struct RubySpy {
     process: Process,
     vm: super::address_finder::RubyVM,
     on_cpu_only: bool,
+    cache: StackScannerCache,
 }
 
 impl RubySpy {
@@ -38,6 +39,7 @@ impl RubySpy {
             process,
             vm,
             on_cpu_only,
+            cache: StackScannerCache::default(),
         })
     }
 
@@ -121,6 +123,7 @@ impl RubySpy {
             &self.process,
             self.process.pid,
             self.on_cpu_only,
+            &self.cache,
         )
     }
 
