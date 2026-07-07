@@ -511,7 +511,7 @@ macro_rules! get_stack_trace(
                     let iseq_struct: rb_iseq_struct = source.copy_struct(cfp.iseq as usize)
                         .context("couldn't copy iseq struct")?;
 
-                    let label_path  = get_stack_frame(&iseq_struct, &cfp, source);
+                    let label_path  = get_stack_frame(&iseq_struct, &cfp, source, cache);
                     match label_path {
                         Ok(call)  => trace.push(call),
                         Err(x) => {
@@ -882,6 +882,7 @@ macro_rules! get_stack_frame_1_9_1(
             iseq_struct: &rb_iseq_struct,
             cfp: &rb_control_frame_t,
             source: &T,
+            _cache: &crate::core::types::StackScannerCache,
             ) -> Result<StackFrame> where T: ProcessMemory {
             Ok(StackFrame{
                 name: get_ruby_string(iseq_struct.name as usize, source)?,
@@ -905,6 +906,7 @@ macro_rules! get_stack_frame_1_9_2(
             iseq_struct: &rb_iseq_struct,
             cfp: &rb_control_frame_t,
             source: &T,
+            _cache: &crate::core::types::StackScannerCache,
             ) -> Result<StackFrame> where T: ProcessMemory {
             Ok(StackFrame{
                 name: get_ruby_string(iseq_struct.name as usize, source)?,
@@ -928,6 +930,7 @@ macro_rules! get_stack_frame_2_0_0(
             iseq_struct: &rb_iseq_struct,
             cfp: &rb_control_frame_t,
             source: &T,
+            _cache: &crate::core::types::StackScannerCache,
         ) -> Result<StackFrame> where T: ProcessMemory {
             Ok(StackFrame{
                 name: get_ruby_string(iseq_struct.location.label as usize, source)?,
@@ -951,6 +954,7 @@ macro_rules! get_stack_frame_2_3_0(
             iseq_struct: &rb_iseq_struct,
             cfp: &rb_control_frame_t,
             source: &T,
+            _cache: &crate::core::types::StackScannerCache,
         ) -> Result<StackFrame> where T: ProcessMemory {
             let body: rb_iseq_constant_body = source.copy_struct(iseq_struct.body as usize)
                 .context(iseq_struct.body as usize)?;
@@ -976,6 +980,7 @@ macro_rules! get_stack_frame_2_5_0(
             iseq_struct: &rb_iseq_struct,
             cfp: &rb_control_frame_t,
             source: &T,
+            _cache: &crate::core::types::StackScannerCache,
         ) -> Result<StackFrame> where T: ProcessMemory {
             if iseq_struct.body == std::ptr::null_mut() {
                 return Err(format_err!("iseq body is null"));
@@ -1260,6 +1265,7 @@ macro_rules! get_stack_frame_3_3_0(
             iseq_struct: &rb_iseq_struct,
             cfp: &rb_control_frame_t,
             source: &T,
+            cache: &crate::core::types::StackScannerCache,
         ) -> Result<StackFrame> where T: ProcessMemory {
             let cme = locate_method_entry(&cfp.ep, source)?;
             let mut class_path = "".to_string();
@@ -1271,7 +1277,18 @@ macro_rules! get_stack_frame_3_3_0(
                 let method_type = method_type[0] & 0xf;
                 // https://github.com/ruby/ruby/blob/v3_3_0/method.h#L110
                 if method_type == 0 {
-                    (class_path, singleton) = get_classpath(cme, false, source)?;
+                    // A method entry's class path is stable, so resolving it once per method
+                    // entry (rather than on every sample) saves several cross-process reads
+                    // per frame per sample.
+                    let classpath_key = (cme, imemo.def as usize);
+                    (class_path, singleton) = match cache.classpath(&classpath_key) {
+                        Some(cached) => cached,
+                        None => {
+                            let (class_path, singleton) = get_classpath(cme, false, source)?;
+                            cache.store_classpath(classpath_key, &class_path, singleton);
+                            (class_path, singleton)
+                        }
+                    };
                     let method_def: rb_method_definition_struct = source.copy_struct(imemo.def as usize).context(imemo.def as usize)?;
                     let iseq: rb_iseq_struct = unsafe {
                         source.copy_struct(method_def.body.iseq.iseqptr as usize).context("")?
@@ -1302,8 +1319,14 @@ macro_rules! get_stack_frame_3_3_0(
                 let local_iseq: rb_iseq_t = source.copy_struct(body.local_iseq as usize)
                     .context("couldn't read local iseq")?;
                 if local_iseq.body != std::ptr::null_mut() {
-                    let local_body: rb_iseq_constant_body = source.copy_struct(iseq_struct.body as usize)
-                        .context("couldn't copy rb_iseq_constant_body")?;
+                    // When this frame's iseq is its own local iseq, `body` is already a copy of
+                    // the struct we need, so skip the (large) duplicate read.
+                    let local_body: rb_iseq_constant_body = if iseq_struct.body == iseq.body {
+                        body
+                    } else {
+                        source.copy_struct(iseq_struct.body as usize)
+                            .context("couldn't copy rb_iseq_constant_body")?
+                    };
                     method_name = get_ruby_string(local_body.location.base_label as usize, source)?;
                 }
 
