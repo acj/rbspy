@@ -402,14 +402,14 @@ macro_rules! get_execution_context_from_vm(
             source: &T,
             cache: &crate::core::types::StackScannerCache,
         ) -> Result<usize> {
-            if let Some(slot) = cache.ec_pointer_slot() {
+            if let Some(slot) = cache.ec_pointer_address() {
                 match source.copy_struct::<usize>(slot) {
                     Ok(ec_addr) if ec_addr != 0
                         && source.copy_struct::<rb_execution_context_struct>(ec_addr).is_ok() => {
                         return Ok(ec_addr);
                     }
                     // The slot no longer holds a valid execution context pointer
-                    _ => cache.clear_ec_pointer_slot(),
+                    _ => cache.clear_ec_pointer_address(),
                 }
             }
 
@@ -444,7 +444,7 @@ macro_rules! get_execution_context_from_vm(
                 if addr == 0 || source.copy_struct::<rb_execution_context_struct>(addr).is_err() {
                     continue;
                 }
-                cache.set_ec_pointer_slot(
+                cache.set_ec_pointer_address(
                     main_ractor_address + offset + (idx - 1) * std::mem::size_of::<usize>()
                 );
                 return Ok(addr);

@@ -56,20 +56,23 @@ pub type GetExecutionContextFn = fn(usize, usize, &Process, &StackScannerCache) 
 pub struct StackScannerCache {
     // Address of the field in the main ractor struct that holds the pointer to the current
     // execution context on ruby 3+
-    ec_pointer_slot: Cell<Option<usize>>,
+    ec_pointer_address: Cell<Option<usize>>,
 }
 
 impl StackScannerCache {
-    pub fn ec_pointer_slot(&self) -> Option<usize> {
-        self.ec_pointer_slot.get()
+    // Far more entries than any real process's method or iseq count; bounds memory use if a
+    // target somehow generates method entries or iseqs without limit.
+
+    pub fn ec_pointer_address(&self) -> Option<usize> {
+        self.ec_pointer_address.get()
     }
 
-    pub fn set_ec_pointer_slot(&self, slot: usize) {
-        self.ec_pointer_slot.set(Some(slot));
+    pub fn set_ec_pointer_address(&self, slot: usize) {
+        self.ec_pointer_address.set(Some(slot));
     }
 
-    pub fn clear_ec_pointer_slot(&self) {
-        self.ec_pointer_slot.set(None);
+    pub fn clear_ec_pointer_address(&self) {
+        self.ec_pointer_address.set(None);
     }
 }
 
