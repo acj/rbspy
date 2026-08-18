@@ -11,7 +11,7 @@ documentation = "https://github.com/rbspy/rbspy"
 homepage = "https://rbspy.github.io/"
 edition = "2021"
 exclude = ["/.github/", "/ci/", "/xtask/"]
-rust-version = "1.56"
+rust-version = "1.85"
 
 [workspace]
 members = [
