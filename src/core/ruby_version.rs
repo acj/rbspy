@@ -395,6 +395,62 @@ macro_rules! ec_search_start_offset_4_0_0(
 
 macro_rules! get_execution_context_from_vm(
     () => (
+        // Upper bound on a plausible VM stack, in words
+        const MAX_VM_STACK_WORDS: usize = 3_000_000;
+
+        /// The offsets at which rb_execution_context_struct's thread_ptr may sit, in the order
+        /// to try them. This is a workaround for different struct layouts between Linux (used
+        /// to generate our bindings) and Windows.
+        fn thread_ptr_offsets() -> [usize; 2] {
+            let without_vm_clock = std::mem::offset_of!(rb_execution_context_struct, thread_ptr);
+            [without_vm_clock, without_vm_clock + std::mem::size_of::<usize>()]
+        }
+
+        /// Checks that `ec_addr` points at an execution context that is currently running on a
+        /// thread belonging to the VM at `vm_addr`, and returns that thread's address.
+        fn validate_execution_context<T: ProcessMemory>(
+            ec_addr: usize,
+            vm_addr: usize,
+            source: &T,
+        ) -> Option<usize> {
+            if ec_addr == 0 {
+                return None;
+            }
+            let ec: rb_execution_context_struct = source.copy_struct(ec_addr).ok()?;
+
+            let stack_start = ec.vm_stack as usize;
+            let stack_words = ec.vm_stack_size as usize;
+            if stack_start == 0 || stack_words == 0 || stack_words > MAX_VM_STACK_WORDS {
+                return None;
+            }
+            let cfp = ec.cfp as usize;
+            if cfp < stack_start || cfp >= stack_start + stack_words * std::mem::size_of::<VALUE>() {
+                return None;
+            }
+
+            for thread_ptr_offset in thread_ptr_offsets().iter() {
+                let thread_addr: usize = match source.copy_struct(ec_addr + thread_ptr_offset) {
+                    Ok(addr) => addr,
+                    Err(_) => continue,
+                };
+                if thread_addr == 0 {
+                    continue;
+                }
+                let thread_ec = source
+                    .copy_struct::<usize>(thread_addr + std::mem::offset_of!(rb_thread_struct, ec)).ok();
+                if thread_ec != Some(ec_addr) {
+                    continue;
+                }
+                let thread_vm = source
+                    .copy_struct::<usize>(thread_addr + std::mem::offset_of!(rb_thread_struct, vm)).ok();
+                if thread_vm != Some(vm_addr) {
+                    continue;
+                }
+                return Some(thread_addr);
+            }
+            None
+        }
+
         pub fn get_execution_context<T: ProcessMemory>(
             _current_thread_address_ptr: usize,
             ruby_vm_address_ptr: usize,
@@ -423,17 +479,17 @@ macro_rules! get_execution_context_from_vm(
                 source.copy_struct(main_ractor_address + offset)
                     .context("couldn't read main ractor struct")?;
 
-            candidate_addresses
-            .iter()
-            .enumerate()
-            .filter(|(idx, &addr)| *idx > 0 && addr == vm.ractor.main_thread as usize)
-            .map(|(idx, _)| candidate_addresses[idx - 1])
-            .filter(|&addr| addr != 0)
-            .filter(|&addr| source.copy_struct::<rb_execution_context_struct>(addr as usize).is_ok())
-            .collect::<Vec<usize>>()
-            .first()
-            .map(|&addr| addr as usize)
-            .ok_or_else(|| format_err!("couldn't find execution context"))
+            for idx in 1..ADDRESSES_TO_CHECK {
+                if candidate_addresses[idx] != vm.ractor.main_thread as usize {
+                    continue;
+                }
+                let addr = candidate_addresses[idx - 1];
+                if validate_execution_context(addr, vm_addr, source).is_none() {
+                    continue;
+                }
+                return Ok(addr);
+            }
+            Err(format_err!("couldn't find execution context"))
         }
     )
 );
@@ -3106,6 +3162,109 @@ mod tests {
             real_stack_trace_with_classes_3_3_0(),
             stack_trace.unwrap().trace
         );
+    }
+
+    struct FakeMemory {
+        base: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl FakeMemory {
+        fn new(base: usize, len: usize) -> Self {
+            FakeMemory {
+                base,
+                bytes: vec![0; len],
+            }
+        }
+
+        fn write_word(&mut self, addr: usize, value: usize) {
+            let start = addr - self.base;
+            self.bytes[start..start + std::mem::size_of::<usize>()]
+                .copy_from_slice(&value.to_ne_bytes());
+        }
+    }
+
+    impl crate::core::process::ProcessMemory for FakeMemory {
+        fn read(&self, addr: usize, buf: &mut [u8]) -> Result<(), remoteprocess::Error> {
+            let out_of_range =
+                || remoteprocess::Error::Other(format!("unmapped read at {addr:#x}"));
+            let start = addr.checked_sub(self.base).ok_or_else(out_of_range)?;
+            let end = start.checked_add(buf.len()).ok_or_else(out_of_range)?;
+            if end > self.bytes.len() {
+                return Err(out_of_range());
+            }
+            buf.copy_from_slice(&self.bytes[start..end]);
+            Ok(())
+        }
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[rstest]
+    #[case::without_vm_clock(0)] // Non-Windows platforms
+    #[case::with_vm_clock(std::mem::size_of::<usize>())] // Windows
+    fn test_execution_context_with_shifted_thread_ptr(#[case] thread_ptr_shift: usize) {
+        use bindings::ruby_3_3_0::{rb_execution_context_struct, rb_thread_struct, rb_vm_struct};
+
+        const BASE: usize = 0x1000_0000;
+        let word = std::mem::size_of::<usize>();
+
+        let vm_ptr_slot = BASE;
+        let vm_addr = BASE + 0x1000;
+        let ractor_addr = BASE + 0x4000;
+        let thread_addr = BASE + 0x6000;
+        let ec_addr = BASE + 0x7000;
+        let stack_start = BASE + 0x9000;
+        let stack_words = 64;
+        let cfp = stack_start + 16 * word;
+        assert!(vm_addr + std::mem::size_of::<rb_vm_struct>() < ractor_addr);
+
+        let mut memory = FakeMemory::new(BASE, 0xC000);
+        memory.write_word(vm_ptr_slot, vm_addr);
+
+        memory.write_word(
+            vm_addr + std::mem::offset_of!(rb_vm_struct, ractor.main_ractor),
+            ractor_addr,
+        );
+        memory.write_word(
+            vm_addr + std::mem::offset_of!(rb_vm_struct, ractor.main_thread),
+            thread_addr,
+        );
+
+        let scan_start = ractor_addr + ruby_version::ruby_3_3_0::ec_search_start_offset() * word;
+        memory.write_word(scan_start + 10 * word, ec_addr);
+        memory.write_word(scan_start + 11 * word, thread_addr);
+
+        memory.write_word(
+            thread_addr + std::mem::offset_of!(rb_thread_struct, vm),
+            vm_addr,
+        );
+        memory.write_word(
+            thread_addr + std::mem::offset_of!(rb_thread_struct, ec),
+            ec_addr,
+        );
+
+        memory.write_word(
+            ec_addr + std::mem::offset_of!(rb_execution_context_struct, vm_stack),
+            stack_start,
+        );
+        memory.write_word(
+            ec_addr + std::mem::offset_of!(rb_execution_context_struct, vm_stack_size),
+            stack_words,
+        );
+        memory.write_word(
+            ec_addr + std::mem::offset_of!(rb_execution_context_struct, cfp),
+            cfp,
+        );
+        memory.write_word(
+            ec_addr
+                + std::mem::offset_of!(rb_execution_context_struct, thread_ptr)
+                + thread_ptr_shift,
+            thread_addr,
+        );
+
+        let found =
+            ruby_version::ruby_3_3_0::get_execution_context(0, vm_ptr_slot, &memory).unwrap();
+        assert_eq!(ec_addr, found);
     }
 
     #[cfg(target_pointer_width = "64")]
