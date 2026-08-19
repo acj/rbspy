@@ -212,7 +212,6 @@ macro_rules! ruby_version_v3_0_x(
             use crate::core::process::ProcessMemory;
 
             get_stack_trace!(rb_execution_context_struct);
-            ec_search_start_offset_3_0_0!();
             get_execution_context_from_vm!();
             rstring_as_array_1_9_1!();
             get_ruby_string_1_9_1!();
@@ -242,7 +241,6 @@ macro_rules! ruby_version_v3_1_x(
             use crate::core::process::ProcessMemory;
 
             get_stack_trace!(rb_execution_context_struct);
-            ec_search_start_offset_3_0_0!();
             get_execution_context_from_vm!();
             rstring_as_array_3_1_0!();
             get_ruby_string_1_9_1!();
@@ -272,7 +270,6 @@ macro_rules! ruby_version_v3_2_x(
             use crate::core::process::ProcessMemory;
 
             get_stack_trace!(rb_execution_context_struct);
-            ec_search_start_offset_3_0_0!();
             get_execution_context_from_vm!();
             get_ruby_string_3_2_0!();
             get_ruby_string_array_3_2_0!();
@@ -301,7 +298,6 @@ macro_rules! ruby_version_v3_3_x(
             use crate::core::process::ProcessMemory;
 
             get_stack_trace!(rb_execution_context_struct);
-            ec_search_start_offset_3_0_0!();
             get_execution_context_from_vm!();
             get_ruby_string_3_3_0!();
             get_ruby_string_array_3_2_0!();
@@ -331,7 +327,6 @@ macro_rules! ruby_version_v4_0_x(
             use crate::core::process::ProcessMemory;
 
             get_stack_trace!(rb_execution_context_struct);
-            ec_search_start_offset_4_0_0!();
             get_execution_context_from_vm!();
             get_ruby_string_3_3_0!();
             get_ruby_string_array_3_2_0!();
@@ -365,38 +360,55 @@ macro_rules! get_execution_context_from_thread(
     )
 );
 
-macro_rules! ec_search_start_offset_3_0_0(
-    () => (
-        pub fn ec_search_start_offset() -> usize {
-            // The initial offsets were found by experimenting
-            return
-                if cfg!(target_os = "windows") {
-                    32
-                } else {
-                    48
-                };
-        }
-    )
-);
-
-macro_rules! ec_search_start_offset_4_0_0(
-    () => (
-        pub fn ec_search_start_offset() -> usize {
-            // The initial offsets were found by experimenting
-            return
-                if cfg!(target_os = "windows") {
-                    30
-                } else {
-                    38
-                };
-        }
-    )
-);
-
 macro_rules! get_execution_context_from_vm(
     () => (
+        // To get a stack trace on Ruby 3 and later, we need to walk memory to find the main
+        // thread's execution context:
+        //
+        //                       ruby_vm_address_ptr
+        //                              |  read one word
+        //                              v
+        //                           vm_addr
+        //  +--------------------------------------------------+
+        //  |  rb_vm_struct                                     |   stage 1
+        //  |    word 0   ...                                   |   scan_words() finds the first word w where
+        //  |    word k   <main thread> --------------------+   |   is_running_thread(w, vm_addr)
+        //  |    ...                                        |   |
+        //  +-----------------------------------------------|---+
+        //                                                  |
+        //              +-----------------------------------+
+        //              v
+        //        main_thread_addr
+        //  +--------------------------------------------------+
+        //  |  rb_thread_struct                                 |
+        //  |   +24  ractor  --------------------------------+  |
+        //  |   +32  vm       == vm_addr                     |  |
+        //  |   +48  ec       fallback if stage 2 fails      |  |
+        //  +------------------------------------------------|--+
+        //                                                   |
+        //              +------------------------------------+
+        //              v
+        //           ractor_addr
+        //  +--------------------------------------------------+
+        //  |  rb_ractor_struct                                 |   stage 2
+        //  |    ...                                            |   scan_words() finds the first word that validates AND
+        //  |    word     threads.running_ec ---------------+   |   whose thread's ractor == ractor_addr
+        //  |    ...                                        |   |
+        //  +-----------------------------------------------|---+
+        //                                                  |
+        //                                                  v
+        //                                               ec_addr    <- returned by get_execution_context
+
         // Upper bound on a plausible VM stack, in words
         const MAX_VM_STACK_WORDS: usize = 3_000_000;
+
+        // Words read at a time when looking for a field whose exact offset we don't know
+        const SCAN_CHUNK_WORDS: usize = 32;
+        // The main thread pointer sits a few words into rb_vm_struct
+        const VM_SCAN_CHUNKS: usize = 2;
+        // running_ec is most of the way into rb_ractor_struct, behind sub-structs whose size
+        // depends on the platform's lock and scheduler types
+        const RACTOR_SCAN_CHUNKS: usize = 4;
 
         /// The offsets at which rb_execution_context_struct's thread_ptr may sit, in the order
         /// to try them. This is a workaround for different struct layouts between Linux (used
@@ -408,6 +420,27 @@ macro_rules! get_execution_context_from_vm(
 
         /// Checks that `ec_addr` points at an execution context that is currently running on a
         /// thread belonging to the VM at `vm_addr`, and returns that thread's address.
+        ///
+        ///  ec_addr
+        ///  +---------------------------------------+
+        ///  |  rb_execution_context_struct          |
+        ///  |   +0   vm_stack       ----> stack_start
+        ///  |   +8   vm_stack_size  ----> n words          cfp must land in
+        ///  |   +16  cfp            ----------------> [stack_start, stack_start + n*8)
+        ///  |                                              and 0 < n <= MAX_VM_STACK_WORDS
+        ///  |   +48  thread_ptr  --+                |
+        ///  |   (+56 on windows due to USE_VM_CLOCK |
+        ///  +----------------------|----------------+
+        ///                         |
+        ///                         v
+        ///                   thread_addr
+        ///  +---------------------------------------+
+        ///  |  rb_thread_struct                     |
+        ///  |   +32  vm  ---> must == vm_addr       |
+        ///  |   +48  ec  --+                        |
+        ///  +--------------|------------------------+
+        ///                 |
+        ///                 +---> must == ec_addr
         fn validate_execution_context<T: ProcessMemory>(
             ec_addr: usize,
             vm_addr: usize,
@@ -451,44 +484,88 @@ macro_rules! get_execution_context_from_vm(
             None
         }
 
+        /// Scans the words of the struct at `addr` for the first one `accept` matches, returning
+        /// it along with the address of the word itself
+        fn scan_words<T, F>(
+            addr: usize,
+            chunks: usize,
+            source: &T,
+            mut accept: F,
+        ) -> Option<(usize, usize)>
+        where
+            T: ProcessMemory,
+            F: FnMut(usize) -> bool,
+        {
+            for chunk in 0..chunks {
+                let chunk_addr = addr + chunk * SCAN_CHUNK_WORDS * std::mem::size_of::<usize>();
+                let words: [usize; SCAN_CHUNK_WORDS] = match source.copy_struct(chunk_addr) {
+                    Ok(words) => words,
+                    Err(_) => break,
+                };
+                for (idx, &word) in words.iter().enumerate() {
+                    if accept(word) {
+                        return Some((word, chunk_addr + idx * std::mem::size_of::<usize>()));
+                    }
+                }
+            }
+            None
+        }
+
+        /// True if `addr` points at a thread of the VM that is running an execution context
+        fn is_running_thread<T: ProcessMemory>(addr: usize, vm_addr: usize, source: &T) -> bool {
+            if addr == 0 {
+                return false;
+            }
+            match source.copy_struct::<usize>(addr + std::mem::offset_of!(rb_thread_struct, vm)) {
+                Ok(thread_vm) if thread_vm == vm_addr => {}
+                _ => return false,
+            }
+            match source.copy_struct::<usize>(addr + std::mem::offset_of!(rb_thread_struct, ec)) {
+                Ok(thread_ec) => {
+                    validate_execution_context(thread_ec, vm_addr, source) == Some(addr)
+                }
+                Err(_) => false,
+            }
+        }
+
+        fn thread_ractor<T: ProcessMemory>(thread_addr: usize, source: &T) -> Option<usize> {
+            source.copy_struct(thread_addr + std::mem::offset_of!(rb_thread_struct, ractor)).ok()
+        }
+
         pub fn get_execution_context<T: ProcessMemory>(
             _current_thread_address_ptr: usize,
             ruby_vm_address_ptr: usize,
             source: &T
         ) -> Result<usize> {
-            // This is a roundabout way to get the execution context address, but it helps us
-            // avoid platform-specific structures in memory (e.g. pthread types) that would
-            // require us to maintain separate ruby-structs bindings for each platform due to
-            // their varying sizes and alignments.
             let vm_addr: usize = source.copy_struct(ruby_vm_address_ptr)
                 .context("couldn't read Ruby VM pointer")?;
-            let vm: rb_vm_struct = source.copy_struct(vm_addr as usize)
-                .context("couldn't read Ruby VM struct")?;
+            let main_thread_addr = scan_words(vm_addr, VM_SCAN_CHUNKS, source, |word| {
+                is_running_thread(word, vm_addr, source)
+            })
+            .map(|(addr, _)| addr)
+            .ok_or_else(|| format_err!("couldn't find the main thread in the Ruby VM struct"))?;
 
-            // Seek forward in the ractor struct, looking for the main thread's address. There
-            // may be other copies of the main thread address in the ractor struct, so it's
-            // important to jump as close as possible to the main_thread struct field before we
-            // search, which is the purpose of the initial offset. The execution context pointer
-            // is in the memory word just before main_thread (see rb_ractor_struct).
-            //
-            // The initial offsets were found by experimenting.
-            const ADDRESSES_TO_CHECK: usize = 32;
-            let offset = ec_search_start_offset() * std::mem::size_of::<usize>();
-            let main_ractor_address = vm.ractor.main_ractor as usize;
-            let candidate_addresses: [usize; ADDRESSES_TO_CHECK] =
-                source.copy_struct(main_ractor_address + offset)
-                    .context("couldn't read main ractor struct")?;
+            let ractor_addr = thread_ractor(main_thread_addr, source)
+                .ok_or_else(|| format_err!("couldn't read the main thread's ractor"))?;
 
-            for idx in 1..ADDRESSES_TO_CHECK {
-                if candidate_addresses[idx] != vm.ractor.main_thread as usize {
-                    continue;
+            let running = scan_words(ractor_addr, RACTOR_SCAN_CHUNKS, source, |word| {
+                match validate_execution_context(word, vm_addr, source) {
+                    Some(thread_addr) => thread_ractor(thread_addr, source) == Some(ractor_addr),
+                    None => false,
                 }
-                let addr = candidate_addresses[idx - 1];
-                if validate_execution_context(addr, vm_addr, source).is_none() {
-                    continue;
-                }
-                return Ok(addr);
+            });
+            if let Some((ec_addr, _)) = running {
+                return Ok(ec_addr);
             }
+
+            debug!("No running execution context in the main ractor; using the main thread's");
+            let main_thread_ec: usize = source
+                .copy_struct(main_thread_addr + std::mem::offset_of!(rb_thread_struct, ec))
+                .context("couldn't read the main thread's execution context")?;
+            if validate_execution_context(main_thread_ec, vm_addr, source).is_some() {
+                return Ok(main_thread_ec);
+            }
+
             Err(format_err!("couldn't find execution context"))
         }
     )
@@ -3203,37 +3280,33 @@ mod tests {
     #[case::without_vm_clock(0)] // Non-Windows platforms
     #[case::with_vm_clock(std::mem::size_of::<usize>())] // Windows
     fn test_execution_context_with_shifted_thread_ptr(#[case] thread_ptr_shift: usize) {
-        use bindings::ruby_3_3_0::{rb_execution_context_struct, rb_thread_struct, rb_vm_struct};
+        use bindings::ruby_3_3_0::{rb_execution_context_struct, rb_thread_struct};
 
         const BASE: usize = 0x1000_0000;
         let word = std::mem::size_of::<usize>();
 
         let vm_ptr_slot = BASE;
         let vm_addr = BASE + 0x1000;
-        let ractor_addr = BASE + 0x4000;
-        let thread_addr = BASE + 0x6000;
+        let ractor_addr = BASE + 0x3000;
+        let thread_addr = BASE + 0x5000;
         let ec_addr = BASE + 0x7000;
         let stack_start = BASE + 0x9000;
         let stack_words = 64;
         let cfp = stack_start + 16 * word;
-        assert!(vm_addr + std::mem::size_of::<rb_vm_struct>() < ractor_addr);
 
         let mut memory = FakeMemory::new(BASE, 0xC000);
         memory.write_word(vm_ptr_slot, vm_addr);
 
+        // The main thread pointer lives a few words into rb_vm_struct, and running_ec is in the
+        // middle of rb_ractor_struct. get_execution_context should be able to find the EC and
+        // thread pointer wherever they are.
+        memory.write_word(vm_addr + 7 * word, thread_addr);
+        memory.write_word(ractor_addr + 54 * word, ec_addr);
+
         memory.write_word(
-            vm_addr + std::mem::offset_of!(rb_vm_struct, ractor.main_ractor),
+            thread_addr + std::mem::offset_of!(rb_thread_struct, ractor),
             ractor_addr,
         );
-        memory.write_word(
-            vm_addr + std::mem::offset_of!(rb_vm_struct, ractor.main_thread),
-            thread_addr,
-        );
-
-        let scan_start = ractor_addr + ruby_version::ruby_3_3_0::ec_search_start_offset() * word;
-        memory.write_word(scan_start + 10 * word, ec_addr);
-        memory.write_word(scan_start + 11 * word, thread_addr);
-
         memory.write_word(
             thread_addr + std::mem::offset_of!(rb_thread_struct, vm),
             vm_addr,
