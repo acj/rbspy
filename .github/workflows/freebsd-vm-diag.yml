@@ -1,0 +1,166 @@
+# Temporary: samples several runner hosts to find out why the FreeBSD VM loses
+# network access on some of them, and whether the freebsd-firecracker-action
+# version matters. Delete once the cause is known.
+name: freebsd-vm-diag
+on:
+  push:
+    branches:
+      - freebsd-vm-diag
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    name: diag (${{ matrix.action }} #${{ matrix.copy }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        action: [v0.13.0, v0.10.3]
+        copy: [1, 2, 3, 4]
+    steps:
+      - name: Host info
+        run: |
+          set +e
+          uname -r
+          grep -m1 "model name" /proc/cpuinfo
+          lscpu | grep -E "Model name|Vendor|Hypervisor|Flags" | cut -c1-200
+          sudo dmesg | grep -iE "tsc|clocksource|netvsc|mana|mlx|Detected .* MHz" | head -30
+          ip -br addr
+          ip -d link show eth0
+          ethtool -i eth0
+          ethtool -k eth0 | grep -E "checksum|segmentation|receive-offload|scatter"
+          ip route
+          resolvectl status | head -20
+          sudo iptables -S
+          sudo iptables -t nat -S
+
+      - name: Launch Firecracker VM (v0.13.0)
+        if: matrix.action == 'v0.13.0'
+        uses: acj/freebsd-firecracker-action@v0.13.0
+        with:
+          verbose: false
+          checkout: false
+          pre-run: |
+            # Capture the VM's DNS/ICMP traffic on both sides of the NAT
+            sudo nohup timeout 600 tcpdump -ni tap0 -w /tmp/tap0.pcap 'udp port 53 or icmp or tcp port 443' >/dev/null 2>&1 &
+            sudo nohup timeout 600 tcpdump -ni eth0 -w /tmp/eth0.pcap 'host 8.8.8.8 or host 1.1.1.1' >/dev/null 2>&1 &
+            sleep 2
+            date -u
+          run-in-vm: |
+            set +e
+            echo "== guest clock vs log timestamps (expect ~30s gap)"
+            date -u; sleep 30; date -u
+
+            echo "== guest info"
+            uname -a
+            sysctl hw.model hw.ncpu machdep.tsc_freq kern.timecounter.hardware kern.timecounter.choice
+            ifconfig vtnet0
+            sysctl dev.vtnet.0 | grep -iE "feat|csum|tso|lro|mtu"
+            netstat -rn -f inet
+            cat /etc/resolv.conf
+
+            echo "== ICMP"
+            ping -c 3 -t 5 172.16.0.1
+            ping -c 3 -t 5 8.8.8.8
+            ping -c 3 -t 5 1.1.1.1
+
+            echo "== MTU (DF set)"
+            for size in 1472 1400 1200; do
+              echo "payload $size"
+              ping -D -s $size -c 2 -t 5 8.8.8.8
+            done
+
+            echo "== DNS with image default resolv.conf"
+            /usr/bin/time getent hosts pkg.FreeBSD.org
+
+            echo "== DNS per server"
+            for ns in 8.8.8.8 1.1.1.1 168.63.129.16; do
+              printf 'nameserver %s\noptions timeout:3 attempts:1\n' $ns > /etc/resolv.conf
+              echo "nameserver $ns"
+              /usr/bin/time getent hosts pkg.FreeBSD.org
+            done
+
+            echo "== TCP/HTTPS by IP"
+            nc -z -w 5 1.1.1.1 443 && echo "tcp 1.1.1.1:443 ok"
+            fetch -T 10 -o /dev/null https://1.1.1.1/ && echo "https 1.1.1.1 ok"
+
+            echo "== Larger HTTPS transfer (needs DNS)"
+            printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions timeout:3 attempts:1\n' > /etc/resolv.conf
+            /usr/bin/time fetch -T 30 -o /dev/null https://pkg.FreeBSD.org/FreeBSD:15:amd64/quarterly/Latest/pkg.pkg
+
+            exit 0
+          post-run: ""
+
+      - name: Launch Firecracker VM (v0.10.3)
+        if: matrix.action == 'v0.10.3'
+        uses: acj/freebsd-firecracker-action@v0.10.3
+        with:
+          verbose: false
+          checkout: false
+          pre-run: |
+            # Capture the VM's DNS/ICMP traffic on both sides of the NAT
+            sudo nohup timeout 600 tcpdump -ni tap0 -w /tmp/tap0.pcap 'udp port 53 or icmp or tcp port 443' >/dev/null 2>&1 &
+            sudo nohup timeout 600 tcpdump -ni eth0 -w /tmp/eth0.pcap 'host 8.8.8.8 or host 1.1.1.1' >/dev/null 2>&1 &
+            sleep 2
+            date -u
+          run-in-vm: |
+            set +e
+            echo "== guest clock vs log timestamps (expect ~30s gap)"
+            date -u; sleep 30; date -u
+
+            echo "== guest info"
+            uname -a
+            sysctl hw.model hw.ncpu machdep.tsc_freq kern.timecounter.hardware kern.timecounter.choice
+            ifconfig vtnet0
+            sysctl dev.vtnet.0 | grep -iE "feat|csum|tso|lro|mtu"
+            netstat -rn -f inet
+            cat /etc/resolv.conf
+
+            echo "== ICMP"
+            ping -c 3 -t 5 172.16.0.1
+            ping -c 3 -t 5 8.8.8.8
+            ping -c 3 -t 5 1.1.1.1
+
+            echo "== MTU (DF set)"
+            for size in 1472 1400 1200; do
+              echo "payload $size"
+              ping -D -s $size -c 2 -t 5 8.8.8.8
+            done
+
+            echo "== DNS with image default resolv.conf"
+            /usr/bin/time getent hosts pkg.FreeBSD.org
+
+            echo "== DNS per server"
+            for ns in 8.8.8.8 1.1.1.1 168.63.129.16; do
+              printf 'nameserver %s\noptions timeout:3 attempts:1\n' $ns > /etc/resolv.conf
+              echo "nameserver $ns"
+              /usr/bin/time getent hosts pkg.FreeBSD.org
+            done
+
+            echo "== TCP/HTTPS by IP"
+            nc -z -w 5 1.1.1.1 443 && echo "tcp 1.1.1.1:443 ok"
+            fetch -T 10 -o /dev/null https://1.1.1.1/ && echo "https 1.1.1.1 ok"
+
+            echo "== Larger HTTPS transfer (needs DNS)"
+            printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions timeout:3 attempts:1\n' > /etc/resolv.conf
+            /usr/bin/time fetch -T 30 -o /dev/null https://pkg.FreeBSD.org/FreeBSD:15:amd64/quarterly/Latest/pkg.pkg
+
+            exit 0
+          post-run: ""
+
+      - name: Host-side capture and NAT counters
+        if: always()
+        run: |
+          set +e
+          sudo pkill tcpdump; sleep 2
+          sudo iptables -L FORWARD -v -n
+          sudo iptables -t nat -L POSTROUTING -v -n
+          sudo dmesg | tail -30
+          echo "== tap0 (VM side)"
+          sudo tcpdump -nn -vv -r /tmp/tap0.pcap 2>&1 | head -150
+          echo "== eth0 (after NAT)"
+          sudo tcpdump -nn -vv -r /tmp/eth0.pcap 2>&1 | head -150
