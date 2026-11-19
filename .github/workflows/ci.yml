@@ -301,7 +301,20 @@ jobs:
             # Workaround for package mismatch warning when new releases come out
             export IGNORE_OSVERSION=yes
 
-            pkg install -y ruby
+            printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+
+            if ! getent hosts pkg.FreeBSD.org >/dev/null; then
+              echo "DNS is not working inside the VM; rerun the job"
+              exit 1
+            fi
+
+            for i in 1 2 3; do
+              pkg install -y ruby && break
+              if [ $i -eq 3 ]; then
+                exit 1
+              fi
+              sleep 10
+            done
 
             ./rbspy --version
 
