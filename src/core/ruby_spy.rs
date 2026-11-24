@@ -245,8 +245,34 @@ mod tests {
         let cmd = RubyScript::new("./ci/ruby-programs/infinite_on_cpu.rb");
         let pid = cmd.id() as Pid;
         let mut spy = RubySpy::retry_new(pid, 100, None, false).expect("couldn't initialize spy");
-        spy.get_stack_trace(false)
-            .expect("couldn't get stack trace");
+        let trace = spy
+            .get_stack_trace(false)
+            .expect("couldn't get stack trace")
+            .expect("expected a trace");
+        assert_eq!(
+            trace.on_cpu, None,
+            "on-CPU state wasn't checked, so it should be unknown"
+        );
+
+        let spinner = RubyScript::new("./ci/ruby-programs/infinite_spin.rb");
+        let pid = spinner.id() as Pid;
+        let mut spy = RubySpy::retry_new(pid, 100, None, true).expect("couldn't initialize spy");
+        // The process spins, but it can be descheduled at any given sample, so retry until a
+        // sample passes the on-CPU checks.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let trace = loop {
+            // Lock the process so that the stack doesn't change under us while we read it. The
+            // on-CPU check happens before the lock is taken.
+            if let Some(trace) = spy.get_stack_trace(true).expect("couldn't get stack trace") {
+                break trace;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never got an on-CPU trace from a spinning process"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(trace.on_cpu, Some(true));
     }
 
     #[test]

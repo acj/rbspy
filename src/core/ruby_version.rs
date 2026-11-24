@@ -656,6 +656,9 @@ macro_rules! get_stack_trace(
                 // for coredump targets.
                 return Ok(None);
             }
+            // Only report an on-CPU state when we actually checked it. Without `on_cpu`, nothing
+            // was checked, so the state is unknown.
+            let on_cpu_state = if on_cpu { Some(true) } else { None };
 
             let thread_id = match get_thread_id(&thread, source) {
                 Ok(tid) => Some(tid),
@@ -673,7 +676,7 @@ macro_rules! get_stack_trace(
                     trace: vec!(StackFrame::unknown_c_function()),
                     thread_id,
                     time: Some(SystemTime::now()),
-                    on_cpu: None,
+                    on_cpu: on_cpu_state,
                 }));
             }
             let mut trace = Vec::new();
@@ -729,7 +732,7 @@ macro_rules! get_stack_trace(
                     None
                 },
             };
-            Ok(Some(StackTrace{trace, pid: Some(pid), thread_id, time: Some(SystemTime::now()), on_cpu: Some(on_cpu)}))
+            Ok(Some(StackTrace{trace, pid: Some(pid), thread_id, time: Some(SystemTime::now()), on_cpu: on_cpu_state}))
         }
 
         use proc_maps::{maps_contain_addr, MapRange};

@@ -32,6 +32,9 @@ pub struct StackTrace {
     pub pid: Option<Pid>,
     pub thread_id: Option<usize>,
     pub time: Option<SystemTime>,
+    /// `Some(true)` if the thread was confirmed to be on CPU when sampled. `None` if the state
+    /// wasn't checked (i.e. on-CPU-only sampling was off). Recordings made by earlier versions
+    /// store `Some(false)` to mean "not checked".
     pub on_cpu: Option<bool>,
 }
 
